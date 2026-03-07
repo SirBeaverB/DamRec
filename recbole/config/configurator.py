@@ -625,11 +625,12 @@ class Config(object):
     def compatibility_settings(self):
         import numpy as np
 
-        np.bool = np.bool_
-        np.int = np.int_
-        np.float = np.float_
-        np.complex = np.complex_
-        np.object = np.object_
-        np.str = np.str_
-        np.long = np.int_
-        np.unicode = np.unicode_
+        # NumPy 2.0+ removed np.float_, np.int_, etc. Use fallbacks for compatibility.
+        np.bool = getattr(np, "bool_", bool)
+        np.int = getattr(np, "int_", np.int64)
+        np.float = getattr(np, "float_", np.float64)
+        np.complex = getattr(np, "complex_", np.complex128)
+        np.object = getattr(np, "object_", object)
+        np.str = getattr(np, "str_", str)
+        np.long = np.int
+        np.unicode = getattr(np, "unicode_", str)
