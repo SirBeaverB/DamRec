@@ -1,0 +1,29 @@
+# DamRec streaming sequential config (extends GDN with Adam-equivalent update)
+# Use with: python run_recbole.py --model=DamRec --config_files=recbole/properties/quick_start_config/streaming/sequential_DamRec_streaming.yaml
+
+dataset: ml-100k
+embedding_size: 64
+streaming_mode: True
+dropout_prob: 0.2
+
+# CRITICAL: No shuffle for streaming (global chronological order)
+shuffle: False
+
+# 按时间顺序 split，保证模型按真实时间线看到数据流
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  group_by: none
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 16384
+eval_batch_size: 8192
+enable_amp: True
+enable_scaler: True
+worker: 4
+use_compile: True
+epochs: 50
+learning_rate: 0.001
+clip_grad_norm:
+  max_norm: 1.0

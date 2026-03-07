@@ -35,6 +35,7 @@ loss_decimal_place: 4           # (int) The decimal place of training loss.
 require_pow: False              # (bool) Whether or not to perform power operation in EmbLoss.
 enable_amp: False               # (bool) Whether or not to use mixed precision training.
 enable_scaler: False            # (bool) Whether or not to use GradScaler in mixed precision training.
+use_compile: False              # (bool) Whether to use torch.compile for model (PyTorch 2.0+).
 transform: ~                    # (str) The transform operation for batch data process.
 
 # Evaluation Settings

@@ -17,3 +17,6 @@ texttable>=0.9.0
 psutil>=5.9.0
 xgboost>=1.5.0
 wandb>=0.12.0
+
+# Optional: for faster GDN (chunk mode)
+flash-linear-attention

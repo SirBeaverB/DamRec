@@ -1637,3 +1637,284 @@ class SparseDropout(nn.Module):
         rc = x._indices()[:, mask]
         val = x._values()[mask] * (1.0 / self.kprob)
         return torch.sparse.FloatTensor(rc, val, x.shape)
+
+
+# --- Gated Delta Layer (GDN / ICLR 2025) ---
+
+try:
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+    _FLA_AVAILABLE = True
+except ImportError:
+    _FLA_AVAILABLE = False
+
+
+def l2_norm(x, eps=1e-5):
+    """L2 norm: x / sqrt(sum(x^2) + eps). Aligned with original GatedDeltaNet."""
+    norm = torch.sqrt(torch.sum(x ** 2, dim=-1, keepdim=True) + eps)
+    return x / norm
+
+
+class CausalDepthwiseConv1d(nn.Module):
+    """Causal 1D depthwise convolution. No future info leak."""
+
+    def __init__(self, dim, kernel_size=3):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.padding = kernel_size - 1
+        self.conv = nn.Conv1d(dim, dim, kernel_size, groups=dim, padding=0)
+
+    def forward(self, x):
+        # x: [B, L, d] -> [B, d, L]
+        x = x.transpose(1, 2)
+        x = fn.pad(x, (self.padding, 0), mode="constant", value=0)
+        x = self.conv(x)
+        return x.transpose(1, 2)  # [B, L, d]
+
+
+class GatedDeltaLayer(nn.Module):
+    r"""Single Gated Delta layer. Aligned with NVlabs GatedDeltaNet:
+    QKV proj -> Conv on Q,K,V -> L2 norm -> Multi-Head Delta -> Output Gate -> FFN.
+
+    Delta rule: S_t = β_t S_{t-1} + γ_t (v_t - S_{t-1} k_t) ⊗ k_t^T
+    """
+
+    def __init__(
+        self,
+        d_model,
+        num_heads=4,
+        conv_kernel_size=3,
+        ffn_ratio=4,
+        dropout=0.1,
+    ):
+        super().__init__()
+        assert d_model % num_heads == 0
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_head = d_model // num_heads
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.q_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.k_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.v_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.beta_gate = nn.Linear(d_model, 1)
+        self.gamma_gate = nn.Linear(d_model, 1)
+        self.out_gate = nn.Linear(d_model, 1)
+
+        # SwiGLU FFN: (W_gate x) * silu(W_up x) @ W_down
+        ffn_hidden = d_model * ffn_ratio
+        self.ffn_gate = nn.Linear(d_model, ffn_hidden)
+        self.ffn_up = nn.Linear(d_model, ffn_hidden)
+        self.ffn_down = nn.Linear(ffn_hidden, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self._use_fla = _FLA_AVAILABLE
+
+    def _delta_step_multihead(self, q, k, v, S, beta, gamma):
+        """Rank-1 update per head: S_t = β S + γ (v - S k) ⊗ k^T. No scaling (original formula)."""
+        Sk = torch.einsum("bhij,bhj->bhi", S, k)
+        residual = v - Sk
+        update = torch.einsum("bhi,bhj->bhij", residual, k)
+        S_new = beta * S + gamma * update
+        return S_new
+
+    def forward(
+        self,
+        x,
+        S_init=None,
+        valid_mask=None,
+        update_mask=None,
+        return_S=False,
+    ):
+        """Forward over sequence. x: [B, L, d]. Returns [B, L, d].
+        update_mask: if given (streaming), only update S where True; else use valid_mask.
+        Note: FLA chunk path may differ slightly from Python loop (chunk parallelism vs sequential).
+        """
+        B, L, d = x.shape
+        device = x.device
+
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        q = self.q_conv(q)
+        k = self.k_conv(k)
+        v = self.v_conv(v)
+        q = l2_norm(q)
+        k = l2_norm(k)
+
+        q = q.view(B, L, self.num_heads, self.d_head)  # [B,L,H,d_h]
+        k = k.view(B, L, self.num_heads, self.d_head)
+        v = v.view(B, L, self.num_heads, self.d_head)
+
+        beta_gates = torch.sigmoid(self.beta_gate(x))  # [B, L, 1]
+        gamma_gates = torch.sigmoid(self.gamma_gate(x))
+        out_gates = torch.sigmoid(self.out_gate(x))
+
+        # [Streaming 兼容 FLA] 对不更新的位置：k=0, v=0, beta=1，使 delta 更新项为 0，S 保持不变
+        vmask = valid_mask if valid_mask is not None else torch.ones(B, L, dtype=torch.bool, device=device)
+        mask_for_update = (vmask & update_mask) if update_mask is not None else vmask
+        if valid_mask is not None or update_mask is not None:
+            mask_H = mask_for_update.view(B, L, 1, 1).to(k.dtype)
+            k = k * mask_H
+            v = v * mask_H
+            beta_gates = torch.where(mask_for_update.unsqueeze(-1), beta_gates, torch.ones_like(beta_gates))
+
+        use_fla = self._use_fla and x.is_cuda
+        if use_fla:
+            g = torch.log(beta_gates.expand(-1, -1, self.num_heads).clamp(min=1e-8))
+            beta_fla = gamma_gates.expand(-1, -1, self.num_heads)
+            h0 = S_init
+            o_fla, S = chunk_gated_delta_rule(
+                q=q, k=k, v=v,
+                g=g, beta=beta_fla,
+                initial_state=h0,
+                output_final_state=True,
+                use_qk_l2norm_in_kernel=False,
+            )
+            out_seq = o_fla.reshape(B, L, d)
+        else:
+            q = q.transpose(1, 2)  # [B,H,L,d_h]
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+            if S_init is None:
+                S = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device)
+            else:
+                S = S_init
+            outputs = []
+            for t in range(L):
+                q_t = q[:, :, t, :]
+                k_t = k[:, :, t, :]
+                v_t = v[:, :, t, :]
+                beta_t = beta_gates[:, t, :].view(B, 1, 1, 1)
+                gamma_t = gamma_gates[:, t, :].view(B, 1, 1, 1)
+                S_new = self._delta_step_multihead(q_t, k_t, v_t, S, beta_t, gamma_t)
+                mask_t = mask_for_update[:, t].view(B, 1, 1, 1)
+                S = torch.where(mask_t, S_new, S)
+                out_t = torch.einsum("bhij,bhj->bhi", S, q_t)
+                outputs.append(out_t)
+            out_seq = torch.stack(outputs, dim=2).permute(0, 2, 1, 3).reshape(B, L, d)
+        out_seq = out_seq * out_gates + x  # residual with input
+        ffn = self.ffn_gate(out_seq) * fn.silu(self.ffn_up(out_seq))
+        out_seq = out_seq + self.dropout(self.ffn_down(ffn))
+
+        if return_S:
+            return out_seq, S
+        return out_seq
+
+
+class GatedDeltaLayerMomentum(nn.Module):
+    r"""Momentum variant of Gated Delta layer: SGD → Momentum SGD.
+    m_t = μ m_{t-1} + γ (v - S k) ⊗ k^T
+    S_t = S_{t-1} + m_t
+    No FLA path (momentum requires per-step velocity); streaming stores (S, M) per user.
+    """
+
+    def __init__(
+        self,
+        d_model,
+        num_heads=4,
+        conv_kernel_size=3,
+        ffn_ratio=4,
+        dropout=0.1,
+        momentum=0.9,
+    ):
+        super().__init__()
+        assert d_model % num_heads == 0
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_head = d_model // num_heads
+        self.momentum = momentum
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.q_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.k_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.v_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.gamma_gate = nn.Linear(d_model, 1)
+        self.out_gate = nn.Linear(d_model, 1)
+
+        ffn_hidden = d_model * ffn_ratio
+        self.ffn_gate = nn.Linear(d_model, ffn_hidden)
+        self.ffn_up = nn.Linear(d_model, ffn_hidden)
+        self.ffn_down = nn.Linear(ffn_hidden, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def _momentum_step(self, q, k, v, S, M, gamma):
+        """m_new = μ*m + γ*(v-Sk)⊗k^T; S_new = S + m_new."""
+        Sk = torch.einsum("bhij,bhj->bhi", S, k)
+        delta = torch.einsum("bhi,bhj->bhij", v - Sk, k)
+        M_new = self.momentum * M + gamma * delta
+        S_new = S + M_new
+        return S_new, M_new
+
+    def forward(
+        self,
+        x,
+        S_init=None,
+        M_init=None,
+        valid_mask=None,
+        update_mask=None,
+        return_S=False,
+    ):
+        """Forward. Returns (out, S, M) when return_S=True."""
+        B, L, d = x.shape
+        device = x.device
+
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        q = self.q_conv(q)
+        k = self.k_conv(k)
+        v = self.v_conv(v)
+        q = l2_norm(q)
+        k = l2_norm(k)
+
+        q = q.view(B, L, self.num_heads, self.d_head)
+        k = k.view(B, L, self.num_heads, self.d_head)
+        v = v.view(B, L, self.num_heads, self.d_head)
+
+        gamma_gates = torch.sigmoid(self.gamma_gate(x))
+        out_gates = torch.sigmoid(self.out_gate(x))
+
+        vmask = valid_mask if valid_mask is not None else torch.ones(B, L, dtype=torch.bool, device=device)
+        mask_for_update = (vmask & update_mask) if update_mask is not None else vmask
+        if valid_mask is not None or update_mask is not None:
+            mask_H = mask_for_update.view(B, L, 1, 1).to(k.dtype)
+            k = k * mask_H
+            v = v * mask_H
+
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        if S_init is None:
+            S = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device)
+        else:
+            S = S_init
+        if M_init is None:
+            M = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device)
+        else:
+            M = M_init
+
+        outputs = []
+        for t in range(L):
+            q_t = q[:, :, t, :]
+            k_t = k[:, :, t, :]
+            v_t = v[:, :, t, :]
+            gamma_t = gamma_gates[:, t, :].view(B, 1, 1, 1)
+            S_new, M_new = self._momentum_step(q_t, k_t, v_t, S, M, gamma_t)
+            mask_t = mask_for_update[:, t].view(B, 1, 1, 1)
+            S = torch.where(mask_t, S_new, S)
+            M = torch.where(mask_t, M_new, M)
+            out_t = torch.einsum("bhij,bhj->bhi", S, q_t)
+            outputs.append(out_t)
+
+        out_seq = torch.stack(outputs, dim=2).permute(0, 2, 1, 3).reshape(B, L, d)
+        out_seq = out_seq * out_gates + x
+        ffn = self.ffn_gate(out_seq) * fn.silu(self.ffn_up(out_seq))
+        out_seq = out_seq + self.dropout(self.ffn_down(ffn))
+
+        if return_S:
+            return out_seq, S, M
+        return out_seq

@@ -13,6 +13,7 @@ recbole.quick_start
 """
 import logging
 import sys
+import torch
 import torch.distributed as dist
 from collections.abc import MutableMapping
 from logging import getLogger
@@ -140,6 +141,10 @@ def run_recbole(
     transform = construct_transform(config)
     flops = get_flops(model, dataset, config["device"], logger, transform)
     logger.info(set_color("FLOPs", "blue") + f": {flops}")
+
+    if config["use_compile"] and hasattr(torch, "compile") and config["single_spec"]:
+        model = torch.compile(model, mode="reduce-overhead")
+        logger.info(set_color("torch.compile", "green") + " enabled (mode=reduce-overhead)")
 
     # trainer loading and initialization
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)

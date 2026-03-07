@@ -1,0 +1,28 @@
+# GDN streaming sequential config - 全局时间顺序
+# Use with: python run_recbole.py --model=GDN --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming.yaml
+
+dataset: ml-100k
+embedding_size: 64
+streaming_mode: True
+dropout_prob: 0.2
+
+shuffle: False
+
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  group_by: none
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 16384
+eval_batch_size: 8192
+enable_amp: True
+enable_scaler: True
+worker: 4
+use_compile: True
+# One-Pass 用 1；充分训练用 50-100
+epochs: 50
+learning_rate: 0.001
+clip_grad_norm:
+  max_norm: 1.0

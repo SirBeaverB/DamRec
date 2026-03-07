@@ -805,6 +805,67 @@ class PretrainTrainer(Trainer):
         return self.best_valid_score, self.best_valid_result
 
 
+class _StreamingTrainerMixin:
+    """Mixin for models with streaming state (GDN, MoRec, DamRec)."""
+
+    def __init__(self, config, model):
+        super().__init__(config, model)
+        # Verify streaming env after Trainer sets up self.logger
+        if getattr(model, "streaming_mode", False):
+            if config["shuffle"]:
+                self.logger.warning(
+                    "[Streaming] shuffle=True with streaming_mode=True may break causal order! "
+                    "Use shuffle: False for true streaming."
+                )
+            else:
+                self.logger.info(
+                    "[Streaming] shuffle=False + streaming_mode=True: chronological order OK"
+                )
+
+    def fit(
+        self,
+        train_data,
+        valid_data=None,
+        verbose=True,
+        saved=True,
+        show_progress=False,
+        callback_fn=None,
+    ):
+        if hasattr(self.model, "reset_streaming_state"):
+            self.model.reset_streaming_state()
+        return super().fit(
+            train_data, valid_data, verbose, saved, show_progress, callback_fn
+        )
+
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
+        if hasattr(self.model, "reset_streaming_state"):
+            self.model.reset_streaming_state()
+        return super()._train_epoch(
+            train_data, epoch_idx, loss_func=loss_func, show_progress=show_progress
+        )
+
+
+class GDNTrainer(_StreamingTrainerMixin, Trainer):
+    r"""GDNTrainer for GDN streaming recommendation."""
+
+    def __init__(self, config, model):
+        super(GDNTrainer, self).__init__(config, model)
+
+
+class DamRecTrainer(_StreamingTrainerMixin, Trainer):
+    r"""DamRecTrainer for DamRec streaming recommendation."""
+
+    def __init__(self, config, model):
+        super(DamRecTrainer, self).__init__(config, model)
+
+
+class MoRecTrainer(_StreamingTrainerMixin, Trainer):
+    r"""MoRecTrainer for MoRec streaming recommendation (momentum delta)."""
+
+    def __init__(self, config, model):
+        super(MoRecTrainer, self).__init__(config, model)
+
+
 class S3RecTrainer(PretrainTrainer):
     r"""S3RecTrainer is designed for S3Rec, which is a self-supervised learning based sequential recommenders.
     It includes two training stages: pre-training ang fine-tuning.

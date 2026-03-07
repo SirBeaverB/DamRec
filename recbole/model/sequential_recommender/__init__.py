@@ -29,3 +29,6 @@ from recbole.model.sequential_recommender.srgnn import SRGNN
 from recbole.model.sequential_recommender.stamp import STAMP
 from recbole.model.sequential_recommender.transrec import TransRec
 from recbole.model.sequential_recommender.fearec import FEARec
+from recbole.model.sequential_recommender.gdn import GDN
+from recbole.model.sequential_recommender.morec import MoRec
+from recbole.model.sequential_recommender.damrec import DamRec

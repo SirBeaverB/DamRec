@@ -1,0 +1,15 @@
+# GDN: Gated Delta Networks for Sequential Recommendation
+# Reference: Gated Delta Networks (ICLR 2025)
+# Modular: Q/K RMSNorm, dual gating (β,γ), multi-head, causal conv, SwiGLU
+
+embedding_size: 64              # (int) Item embedding dim
+dropout_prob: 0.3               # (float) Dropout rate.
+loss_type: 'CE'                 # (str) Loss: 'BPR' or 'CE'.
+train_neg_sample_args: ~        # (None) Required for CE loss.
+
+n_layers: 1                     # (int) Number of GatedDeltaLayer blocks
+num_heads: 4                    # (int) Multi-head; d must be divisible
+conv_kernel_size: 3             # (int) Causal 1D DWConv kernel size
+ffn_ratio: 4                    # (int) SwiGLU hidden = d * ffn_ratio
+
+streaming_mode: False           # (bool) Per-user state persistence across batches.

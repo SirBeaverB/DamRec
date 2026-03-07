@@ -1,0 +1,26 @@
+# SASRec with same config as GDN for fair comparison
+# 与 GDN 相同的数据划分和训练配置
+
+dataset: ml-100k
+hidden_size: 64
+train_neg_sample_args: ~
+
+shuffle: False
+
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  group_by: none
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 16384
+eval_batch_size: 8192
+enable_amp: True
+enable_scaler: True
+worker: 4
+use_compile: True
+epochs: 50
+learning_rate: 0.001
+clip_grad_norm:
+  max_norm: 1.0

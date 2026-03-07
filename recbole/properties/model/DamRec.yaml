@@ -1,0 +1,18 @@
+# DamRec: Delta-Adam Memory for Streaming Recommendation
+# Extends GDN with Adam-equivalent state update (TODO)
+
+embedding_size: 64
+dropout_prob: 0.3
+loss_type: 'CE'
+train_neg_sample_args: ~
+
+n_layers: 1
+num_heads: 4
+conv_kernel_size: 3
+ffn_ratio: 4
+streaming_mode: False
+
+# Adam-equivalent params (for future implementation)
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_eps: 1e-8

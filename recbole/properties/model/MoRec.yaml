@@ -1,0 +1,15 @@
+# MoRec: Momentum-based Delta Rule for Streaming Recommendation
+# Replaces SGD with momentum SGD in the associative memory update
+
+embedding_size: 64
+dropout_prob: 0.3
+loss_type: 'CE'
+train_neg_sample_args: ~
+
+n_layers: 1
+num_heads: 4
+conv_kernel_size: 3
+ffn_ratio: 4
+momentum: 0.9              # (float) Momentum factor μ for velocity accumulation
+
+streaming_mode: False
