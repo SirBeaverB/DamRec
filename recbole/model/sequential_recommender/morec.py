@@ -129,8 +129,9 @@ class MoRec(SequentialRecommender):
         out = self.gather_indexes(x, last_idx)
         return self.output_proj(out)
 
-    def forward_with_streaming(self, item_seq, item_seq_len, user_ids):
-        """Streaming: per-user (S, M) state per layer."""
+    def forward_with_streaming(self, item_seq, item_seq_len, user_ids, update_state=True):
+        """Streaming: per-user (S, M) state per layer.
+        update_state=False: read-only for predict, avoids double-update in T2T."""
         item_seq_emb = self.item_embedding(item_seq)
         item_seq_emb = self.emb_dropout(item_seq_emb)
 
@@ -184,14 +185,15 @@ class MoRec(SequentialRecommender):
         out = self.gather_indexes(x, last_idx)
         out = self.output_proj(out)
 
-        with torch.no_grad():
-            for i in range(batch_size):
-                uid = user_ids[i].item()
-                new_len = item_seq_len[i].item()
-                if new_len > start_idx[i]:
-                    stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
-                    stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
-                    self._streaming_state[uid] = (stored_S, stored_M, new_len, device)
+        if update_state:
+            with torch.no_grad():
+                for i in range(batch_size):
+                    uid = user_ids[i].item()
+                    new_len = item_seq_len[i].item()
+                    if new_len > start_idx[i]:
+                        stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
+                        stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
+                        self._streaming_state[uid] = (stored_S, stored_M, new_len, device)
 
         return out
 
@@ -229,7 +231,7 @@ class MoRec(SequentialRecommender):
         user_ids = interaction[self.USER_ID]
         if hasattr(self, "streaming_mode") and self.streaming_mode:
             seq_output = self.forward_with_streaming(
-                item_seq, item_seq_len, user_ids
+                item_seq, item_seq_len, user_ids, update_state=False
             )
         else:
             seq_output = self.forward(item_seq, item_seq_len)
@@ -245,7 +247,7 @@ class MoRec(SequentialRecommender):
 
         if hasattr(self, "streaming_mode") and self.streaming_mode:
             seq_output = self.forward_with_streaming(
-                item_seq, item_seq_len, user_ids
+                item_seq, item_seq_len, user_ids, update_state=False
             )
         else:
             seq_output = self.forward(item_seq, item_seq_len)

@@ -38,15 +38,24 @@ DamRec 的核心创新灵感来源于序列建模与最优化理论之间深层�
 - non streaming测试（参数调优不充分，还有改进空间）
 
 
-4. ~~实现真正的t2t流式~~ ✅ 已完成（见「Test-Then-Train 流式」）
+4. 测试t2t
 
 ---
 ## 快速测试
 
+```bash
+# ml-100k: L=50, epochs=100
+python scripts/run_non_streaming_experiments_100k.py
+
+# ml-1m: L=128, epochs=150
+python scripts/run_non_streaming_experiments_1m.py
 ```
-python scripts/run_non_streaming_experiments.py
-```
-主要注意，chunk size需要小于L，否则全部退化为纯GDN
+
+### 非流式 L / Chunk 配置说明
+- **L (MAX_ITEM_LIST_LENGTH)**：序列长度，默认 50。ml-100k 用 50 即可；**ml-1m 用户历史更长，建议 L=128**。`run_non_streaming_experiments` 在 ml-1m 下已自动设为 128。
+- **CHUNK_SIZE**：在 `layers.py` 中硬编码为 16。MoRec/NestRec/DamRec/FroRec 的 Chunk 级更新按 16 个 token 为一组做宏观动量/Adam。
+- **约束**：`CHUNK_SIZE < L`，否则整序列只有 1 个 chunk，宏观更新退化为纯 GDN。当前 L=50→3 chunks，L=128→8 chunks，均满足。
+- **FLA 依赖**：Chunk 级模式需 `pip install flash-linear-attention` + CUDA，否则 DamRec/MoRec/NestRec 退化为 Token 级（仍可跑，但更慢）。
 
 ### 综合测试脚本 (Step 3)
 对比 GDN、MoRec、NestRec、DamRec、FroRec、SASRec(baseline)，支持数据集/epoch/序列长度消融：
@@ -180,6 +189,15 @@ python scripts/verify_streaming.py
 ```
 通过则输出 `[OK] 所有流式验证通过`。
 
+### 评估设置验证脚本
+检查评估是否为**全排序 (Full-sort)** 以及是否存在 **Target Leakage**（未来信息穿越）：
+```bash
+python scripts/verify_eval_setup.py --dataset=ml-100k
+# 指定配置
+python scripts/verify_eval_setup.py --dataset=ml-1m --config_files="recbole/properties/quick_start_config/sequential_DamRec.yaml"
+```
+输出：`eval_args.mode`（应为 full）、DataLoader 类型（应为 FullSortEvalDataLoader）、随机抽查 `item_seq[-1] ≠ pos_item` 是否成立、候选物品总数。
+
 ---
 
 ## Test-Then-Train 流式（严格 Prequential）
@@ -192,15 +210,35 @@ python scripts/verify_streaming.py
 - **无限长程记忆**：S 伴随用户生命周期演化，不随 epoch 重置
 
 ### 运行
-```bash
-# GDN Test-Then-Train 流式（默认 ml-10m，约 1000 万交互）
-python run_recbole.py --model=GDN \
-  --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+公共配置：`recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml`（所有模型共用）
 
-# 使用 ml-100k 快速验证
-python run_recbole.py --model=GDN --dataset=ml-100k \
-  --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+**ml-100k（快速验证）**
+```bash
+python run_recbole.py --model=GDN --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=MoRec --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=NestRec --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=DamRec --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=FroRec --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
 ```
+
+**ml-1m**
+```bash
+python run_recbole.py --model=GDN --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=MoRec --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=NestRec --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=DamRec --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=FroRec --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+```
+
+**ml-10m（默认，约 1000 万交互）**
+```bash
+python run_recbole.py --model=GDN --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=MoRec --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=NestRec --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=DamRec --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+python run_recbole.py --model=FroRec --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+```
+注：未指定 `--dataset` 时使用配置内默认 `ml-10m`。FroRec 需 FLA+CUDA。
 
 ### 配置要点
 - `streaming_t2t: True`：启用 T2T 模式

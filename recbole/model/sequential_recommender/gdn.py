@@ -110,8 +110,9 @@ class GDN(SequentialRecommender):
         out = self.gather_indexes(x, last_idx)
         return self.output_proj(out)
 
-    def forward_with_streaming(self, item_seq, item_seq_len, user_ids):
-        """Streaming: incremental update only, per-user state per layer."""
+    def forward_with_streaming(self, item_seq, item_seq_len, user_ids, update_state=True):
+        """Streaming: incremental update only, per-user state per layer.
+        update_state=False: read-only for predict, avoids double-update in T2T."""
         item_seq_emb = self.item_embedding(item_seq)
         item_seq_emb = self.emb_dropout(item_seq_emb)
 
@@ -162,13 +163,14 @@ class GDN(SequentialRecommender):
         out = self.gather_indexes(x, last_idx)
         out = self.output_proj(out)
 
-        with torch.no_grad():
-            for i in range(batch_size):
-                uid = user_ids[i].item()
-                new_len = item_seq_len[i].item()
-                if new_len > start_idx[i]:
-                    stored = tuple(s[i].detach().clone() for s in S_batch_list)
-                    self._streaming_state[uid] = (stored, new_len, device)
+        if update_state:
+            with torch.no_grad():
+                for i in range(batch_size):
+                    uid = user_ids[i].item()
+                    new_len = item_seq_len[i].item()
+                    if new_len > start_idx[i]:
+                        stored = tuple(s[i].detach().clone() for s in S_batch_list)
+                        self._streaming_state[uid] = (stored, new_len, device)
 
         return out
 
@@ -206,7 +208,7 @@ class GDN(SequentialRecommender):
         user_ids = interaction[self.USER_ID]
         if hasattr(self, "streaming_mode") and self.streaming_mode:
             seq_output = self.forward_with_streaming(
-                item_seq, item_seq_len, user_ids
+                item_seq, item_seq_len, user_ids, update_state=False
             )
         else:
             seq_output = self.forward(item_seq, item_seq_len)
@@ -222,7 +224,7 @@ class GDN(SequentialRecommender):
 
         if hasattr(self, "streaming_mode") and self.streaming_mode:
             seq_output = self.forward_with_streaming(
-                item_seq, item_seq_len, user_ids
+                item_seq, item_seq_len, user_ids, update_state=False
             )
         else:
             seq_output = self.forward(item_seq, item_seq_len)

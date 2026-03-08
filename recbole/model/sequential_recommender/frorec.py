@@ -123,7 +123,8 @@ class FroRec(SequentialRecommender):
         out = self.gather_indexes(x, last_idx)
         return self.output_proj(out)
 
-    def forward_with_streaming(self, item_seq, item_seq_len, user_ids):
+    def forward_with_streaming(self, item_seq, item_seq_len, user_ids, update_state=True):
+        """update_state=False: read-only for predict, avoids double-update in T2T."""
         item_seq_emb = self.item_embedding(item_seq)
         item_seq_emb = self.emb_dropout(item_seq_emb)
 
@@ -194,16 +195,17 @@ class FroRec(SequentialRecommender):
         out = self.gather_indexes(x, last_idx)
         out = self.output_proj(out)
 
-        with torch.no_grad():
-            for i in range(batch_size):
-                uid = user_ids[i].item()
-                new_len = item_seq_len[i].item()
-                if new_len > start_idx[i]:
-                    stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
-                    stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
-                    stored_V = tuple(v[i].detach().clone() for v in V_batch_list)
-                    stored_step = tuple(st[i].detach().clone() for st in step_batch_list)
-                    self._streaming_state[uid] = (stored_S, stored_M, stored_V, stored_step, new_len, device)
+        if update_state:
+            with torch.no_grad():
+                for i in range(batch_size):
+                    uid = user_ids[i].item()
+                    new_len = item_seq_len[i].item()
+                    if new_len > start_idx[i]:
+                        stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
+                        stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
+                        stored_V = tuple(v[i].detach().clone() for v in V_batch_list)
+                        stored_step = tuple(st[i].detach().clone() for st in step_batch_list)
+                        self._streaming_state[uid] = (stored_S, stored_M, stored_V, stored_step, new_len, device)
 
         return out
 
@@ -241,7 +243,7 @@ class FroRec(SequentialRecommender):
         user_ids = interaction[self.USER_ID]
         if hasattr(self, "streaming_mode") and self.streaming_mode:
             seq_output = self.forward_with_streaming(
-                item_seq, item_seq_len, user_ids
+                item_seq, item_seq_len, user_ids, update_state=False
             )
         else:
             seq_output = self.forward(item_seq, item_seq_len)
@@ -257,7 +259,7 @@ class FroRec(SequentialRecommender):
 
         if hasattr(self, "streaming_mode") and self.streaming_mode:
             seq_output = self.forward_with_streaming(
-                item_seq, item_seq_len, user_ids
+                item_seq, item_seq_len, user_ids, update_state=False
             )
         else:
             seq_output = self.forward(item_seq, item_seq_len)

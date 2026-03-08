@@ -1,0 +1,8 @@
+非流式实验 (streaming_mode=False)
+dataset=ml-1m, time=20260308_205556
+
+模型			GDN		Mo		Nest		Adam		Fro
+----------------------------------------------------------------------
+valid recall@10	N/A		N/A		N/A		N/A		N/A		
+test recall@10	N/A		N/A		N/A		N/A		N/A		
+time (s)		N/A		N/A		N/A		N/A		N/A		

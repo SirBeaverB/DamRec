@@ -1,0 +1,6 @@
+model,valid_recall@10,test_recall@10,train_time_sec
+GDN,N/A,N/A,N/A
+Mo,N/A,N/A,N/A
+Nest,N/A,N/A,N/A
+Adam,N/A,N/A,N/A
+Fro,N/A,N/A,N/A
