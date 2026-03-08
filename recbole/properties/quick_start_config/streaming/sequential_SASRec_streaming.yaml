@@ -2,6 +2,7 @@
 # 与 GDN 相同的数据划分和训练配置
 
 dataset: ml-100k
+MAX_ITEM_LIST_LENGTH: 50
 hidden_size: 64
 train_neg_sample_args: ~
 
@@ -20,7 +21,7 @@ enable_amp: True
 enable_scaler: True
 worker: 4
 use_compile: True
-epochs: 50
+epochs: 30
 learning_rate: 0.001
 clip_grad_norm:
   max_norm: 1.0

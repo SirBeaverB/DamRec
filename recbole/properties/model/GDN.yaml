@@ -11,5 +11,6 @@ n_layers: 1                     # (int) Number of GatedDeltaLayer blocks
 num_heads: 4                    # (int) Multi-head; d must be divisible
 conv_kernel_size: 3             # (int) Causal 1D DWConv kernel size
 ffn_ratio: 4                    # (int) SwiGLU hidden = d * ffn_ratio
+use_fla: True                   # (bool) Use FLA chunk kernel when available. Set False if training degrades.
 
 streaming_mode: False           # (bool) Per-user state persistence across batches.

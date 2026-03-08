@@ -1,0 +1,24 @@
+# SASRec 非流式 - baseline 对比用，与 GDN 等相同数据划分
+# Use: python run_recbole.py --model=SASRec --config_files=recbole/properties/quick_start_config/sequential_SASRec.yaml
+
+dataset: ml-100k
+MAX_ITEM_LIST_LENGTH: 50
+hidden_size: 64
+n_layers: 2
+n_heads: 2
+inner_size: 256
+hidden_dropout_prob: 0.2
+attn_dropout_prob: 0.2
+train_neg_sample_args: ~
+
+eval_args:
+  split: {'LS': 'valid_and_test'}
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 4096
+eval_batch_size: 2048
+epochs: 100
+stopping_step: 10
+learning_rate: 0.001

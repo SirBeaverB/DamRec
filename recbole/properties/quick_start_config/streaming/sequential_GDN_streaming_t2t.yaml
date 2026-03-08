@@ -1,0 +1,31 @@
+# GDN Test-Then-Train streaming: 全局时间轴，先预测后训练，S 永不重置
+# Use: python run_recbole.py --model=GDN --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
+
+dataset: ml-10m
+MAX_ITEM_LIST_LENGTH: 50
+embedding_size: 64
+streaming_mode: True
+streaming_t2t: True
+streaming_test_ratio: 0.1
+dropout_prob: 0.2
+use_fla: True
+
+shuffle: False
+
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  group_by: none
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 2048
+eval_batch_size: 2048
+enable_amp: False
+enable_scaler: False
+worker: 4
+use_compile: False
+epochs: 1
+learning_rate: 0.001
+clip_grad_norm:
+  max_norm: 1.0

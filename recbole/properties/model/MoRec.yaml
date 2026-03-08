@@ -1,5 +1,6 @@
 # MoRec: Momentum-based Delta Rule for Streaming Recommendation
-# Replaces SGD with momentum SGD in the associative memory update
+# Token 级: m_t = μ m_{t-1} + γ Δ; S_t = S_{t-1} + m_t (Python 循环)
+# Chunk 级: FLA + 宏观动量，可复用 FLA 加速
 
 embedding_size: 64
 dropout_prob: 0.3
@@ -10,6 +11,8 @@ n_layers: 1
 num_heads: 4
 conv_kernel_size: 3
 ffn_ratio: 4
-momentum: 0.9              # (float) Momentum factor μ for velocity accumulation
+momentum: 0.9              # (float) Momentum factor μ
+momentum_eta: 0.15         # (float) Chunk 级: S_next = S_end + η*M，过小会退化成 GDN
+use_chunk_momentum: False  # (bool) True=Chunk 级 FLA 加速，False=Token 级 Python
 
 streaming_mode: False

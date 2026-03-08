@@ -21,16 +21,16 @@ import math
 
 
 def hyperopt_tune(args):
-    # plz set algo='exhaustive' to use exhaustive search, in this case, max_evals is auto set
-    # in other case, max_evals needs to be set manually
+    # algo='exhaustive': 网格搜索，仅适用于全离散参数；algo='random'/'bayes': 适用于连续参数
     config_file_list = (
         args.config_files.strip().split(" ") if args.config_files else None
     )
+    max_evals = getattr(args, "max_evals", 12)
     hp = HyperTuning(
         objective_function,
-        algo="exhaustive",
-        early_stop=10,
-        max_evals=100,
+        algo="random",
+        early_stop=5,
+        max_evals=max_evals,
         params_file=args.params_file,
         fixed_config_file_list=config_file_list,
         display_file=args.display_file,
@@ -118,6 +118,7 @@ if __name__ == "__main__":
         "--display_file", type=str, default=None, help="visualization file"
     )
     parser.add_argument("--tool", type=str, default="Hyperopt", help="tuning tool")
+    parser.add_argument("--max_evals", type=int, default=12, help="max trials (~12≈1h for DamRec)")
     args, _ = parser.parse_known_args()
 
     if args.tool == "Hyperopt":

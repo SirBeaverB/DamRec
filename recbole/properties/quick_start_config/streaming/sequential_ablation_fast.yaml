@@ -1,0 +1,5 @@
+# 快速消融配置 - 20 epochs，用于快速验证 GDN vs MoRec 相对趋势
+# 覆盖到任意 streaming 配置: --config_files=...,sequential_ablation_fast.yaml
+
+epochs: 20
+eval_step: 5

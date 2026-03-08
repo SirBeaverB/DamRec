@@ -44,7 +44,7 @@ def create_dataset(config):
         model_type = config["MODEL_TYPE"]
         type2class = {
             ModelType.GENERAL: "Dataset",
-            ModelType.SEQUENTIAL: "SequentialDataset",
+            ModelType.SEQUENTIAL: "StreamingSequentialDataset" if config.final_config_dict.get("streaming_t2t", False) else "SequentialDataset",
             ModelType.CONTEXT: "Dataset",
             ModelType.KNOWLEDGE: "KnowledgeBasedDataset",
             ModelType.TRADITIONAL: "Dataset",
@@ -56,7 +56,7 @@ def create_dataset(config):
         config["checkpoint_dir"], f'{config["dataset"]}-{dataset_class.__name__}.pth'
     )
     file = config["dataset_save_path"] or default_file
-    if os.path.exists(file):
+    if os.path.exists(file) and not config.final_config_dict.get("streaming_t2t", False):
         with open(file, "rb") as f:
             dataset = pickle.load(f)
         dataset_args_unchanged = True
@@ -146,6 +146,7 @@ def data_preparation(config, dataset):
 
     Note:
         If we can load split dataloaders by :meth:`load_split_dataloaders`, we will not create new split dataloaders.
+        When streaming_t2t=True, returns (streaming_dataloader, None, None) for Test-Then-Train.
 
     Args:
         config (Config): An instance object of Config, used to record parameter information.
@@ -157,6 +158,17 @@ def data_preparation(config, dataset):
             - valid_data (AbstractDataLoader): The dataloader for validation.
             - test_data (AbstractDataLoader): The dataloader for testing.
     """
+    if config.final_config_dict.get("streaming_t2t", False):
+        from recbole.data.streaming_timeline import create_streaming_timeline_dataloader
+        dataset.build()  # triggers _change_feat_format -> data_augmentation (saves _raw_inter_for_timeline)
+        streaming_dl = create_streaming_timeline_dataloader(config, dataset)
+        logger = getLogger()
+        logger.info(
+            set_color("[Streaming T2T]: ", "pink")
+            + "single global timeline, test-then-train, no reset"
+        )
+        return streaming_dl, None, None
+
     dataloaders = load_split_dataloaders(config)
     if dataloaders is not None:
         train_data, valid_data, test_data = dataloaders

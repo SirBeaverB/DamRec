@@ -38,6 +38,7 @@ class GDN(SequentialRecommender):
         self.num_heads = config["num_heads"] if config["num_heads"] is not None else 4
         self.conv_kernel_size = config["conv_kernel_size"] if config["conv_kernel_size"] is not None else 3
         self.ffn_ratio = config["ffn_ratio"] if config["ffn_ratio"] is not None else 4
+        self.use_fla = config["use_fla"] if config["use_fla"] is not None else True
 
         self.item_embedding = nn.Embedding(
             self.n_items, self.embedding_size, padding_idx=0
@@ -51,6 +52,7 @@ class GDN(SequentialRecommender):
                 conv_kernel_size=self.conv_kernel_size,
                 ffn_ratio=self.ffn_ratio,
                 dropout=self.dropout_prob,
+                use_fla=self.use_fla,
             )
             for _ in range(self.n_layers)
         ])
@@ -72,6 +74,8 @@ class GDN(SequentialRecommender):
             )
         else:
             self.logger.info("[GDN] Streaming OFF: batch-independent forward")
+        fla_status = "ON" if self.use_fla else "OFF"
+        self.logger.info(f"[GDN] use_fla={fla_status} (FLA 加速; scale=1.0 已修复)")
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):

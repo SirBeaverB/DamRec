@@ -32,3 +32,5 @@ from recbole.model.sequential_recommender.fearec import FEARec
 from recbole.model.sequential_recommender.gdn import GDN
 from recbole.model.sequential_recommender.morec import MoRec
 from recbole.model.sequential_recommender.damrec import DamRec
+from recbole.model.sequential_recommender.nestrec import NestRec
+from recbole.model.sequential_recommender.frorec import FroRec

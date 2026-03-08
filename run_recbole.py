@@ -15,7 +15,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "-m", type=str, default="BPR", help="name of models")
     parser.add_argument(
-        "--dataset", "-d", type=str, default="ml-100k", help="name of datasets"
+        "--dataset", "-d", type=str, default=None,
+        help="name of datasets (default: use dataset from config file, or ml-100k)"
     )
     parser.add_argument("--config_files", type=str, default=None, help="config files")
     parser.add_argument(
@@ -42,10 +43,14 @@ if __name__ == "__main__":
     config_file_list = (
         args.config_files.strip().split(" ") if args.config_files else None
     )
+    # 未指定 --dataset 时传 None，让 Config 从 config 文件读取；否则 config 文件的 dataset 会被覆盖
+    dataset = args.dataset if args.dataset is not None else (
+        "ml-100k" if config_file_list is None else None
+    )
 
     run(
         args.model,
-        args.dataset,
+        dataset,
         config_file_list=config_file_list,
         nproc=args.nproc,
         world_size=args.world_size,

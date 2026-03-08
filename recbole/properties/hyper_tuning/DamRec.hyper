@@ -1,0 +1,7 @@
+# DamRec (Adam 量纲修正: η 宜小，ε 宜大)
+learning_rate loguniform -6,-2
+embedding_size choice [64, 96, 128]
+dropout_prob uniform 0.1,0.4
+adam_eta loguniform -7,-4
+adam_eps loguniform -9,-4
+adam_beta2 choice [0.95, 0.99, 0.999]

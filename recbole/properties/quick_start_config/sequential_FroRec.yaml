@@ -1,0 +1,26 @@
+# FroRec 非流式配置 - F-Adam (Frobenius 范数标量 V)
+# Use: python run_recbole.py --model=FroRec --config_files=recbole/properties/quick_start_config/sequential_FroRec.yaml
+# 需要 FLA + CUDA
+
+dataset: ml-100k
+MAX_ITEM_LIST_LENGTH: 50
+embedding_size: 64
+streaming_mode: False
+dropout_prob: 0.2
+adam_beta1: 0.9
+adam_beta2: 0.99
+adam_eps: 1e-4
+adam_eta: 0.05
+train_neg_sample_args: ~
+
+eval_args:
+  split: {'LS': 'valid_and_test'}
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 4096
+eval_batch_size: 2048
+epochs: 100
+stopping_step: 10
+learning_rate: 0.001

@@ -1,0 +1,23 @@
+# GDN 非流式配置 - 标准训练，recall 可达 ~14%
+# 与 streaming 配置对比：streaming_mode: False，可 shuffle
+# Use: python run_recbole.py --model=GDN --config_files=recbole/properties/quick_start_config/sequential_GDN.yaml
+
+dataset: ml-100k
+MAX_ITEM_LIST_LENGTH: 50
+embedding_size: 64
+streaming_mode: False
+dropout_prob: 0.2
+use_fla: True   # FLA chunk 加速
+train_neg_sample_args: ~
+
+eval_args:
+  split: {'LS': 'valid_and_test'}
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 4096
+eval_batch_size: 2048
+epochs: 100
+stopping_step: 10
+learning_rate: 0.001

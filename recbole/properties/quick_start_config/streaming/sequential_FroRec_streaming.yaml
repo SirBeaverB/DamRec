@@ -1,8 +1,8 @@
-# DamRec streaming - delta rule + Adam 式更新
-# use_chunk_adam: True 时用 FLA + Chunk 级 Adam
-# Use: python run_recbole.py --model=DamRec --config_files=recbole/properties/quick_start_config/streaming/sequential_DamRec_streaming.yaml
+# FroRec streaming - F-Adam (Frobenius 范数标量 V，几何安全)
+# Use: python run_recbole.py --model=FroRec --config_files=recbole/properties/quick_start_config/streaming/sequential_FroRec_streaming.yaml
+# 需要 FLA + CUDA
 
-model: DamRec
+model: FroRec
 dataset: ml-100k
 MAX_ITEM_LIST_LENGTH: 50
 embedding_size: 64
@@ -11,8 +11,7 @@ dropout_prob: 0.2
 adam_beta1: 0.9
 adam_beta2: 0.99
 adam_eps: 1e-4
-adam_eta: 0.05
-use_chunk_adam: True
+adam_eta: 0.05   # 0.02 过小易退化成 GDN
 train_neg_sample_args: ~
 
 shuffle: False
@@ -26,8 +25,7 @@ eval_args:
 repeatable: True
 train_batch_size: 4096
 eval_batch_size: 2048
-# 显存不足时: --config_dict="{'train_batch_size': 1024, 'eval_batch_size': 512}"
-enable_amp: False   # AMP 下 Adam sqrt/除法易产生 NaN，DamRec 建议关闭
+enable_amp: False
 enable_scaler: False
 worker: 4
 use_compile: True

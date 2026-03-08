@@ -147,17 +147,20 @@ def run_recbole(
         logger.info(set_color("torch.compile", "green") + " enabled (mode=reduce-overhead)")
 
     # trainer loading and initialization
-    trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
+    trainer = get_trainer(config["MODEL_TYPE"], config["model"], config)(config, model)
 
     # model training
     best_valid_score, best_valid_result = trainer.fit(
         train_data, valid_data, saved=saved, show_progress=config["show_progress"]
     )
 
-    # model evaluation
-    test_result = trainer.evaluate(
-        test_data, load_best_model=saved, show_progress=config["show_progress"]
-    )
+    # model evaluation (skip when streaming_t2t: eval is inline during fit)
+    if config.final_config_dict.get("streaming_t2t", False):
+        test_result = best_valid_result
+    else:
+        test_result = trainer.evaluate(
+            test_data, load_best_model=saved, show_progress=config["show_progress"]
+        )
 
     environment_tb = get_environment(config)
     logger.info(

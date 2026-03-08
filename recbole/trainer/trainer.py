@@ -258,6 +258,11 @@ class Trainer(AbstractTrainer):
                     losses.item() if total_loss is None else total_loss + losses.item()
                 )
             self._check_nan(loss)
+            # debug_gdn: 每 100 batch 打印 loss，便于排查 FLA 路径问题
+            if self.config["debug_gdn"] and batch_idx > 0 and batch_idx % 100 == 0:
+                self.logger.info(
+                    f"[debug_gdn] epoch {epoch_idx} batch {batch_idx} loss: {loss.item():.4f}"
+                )
             scaler.scale(loss + sync_loss).backward()
             if self.clip_grad_norm:
                 clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
@@ -432,6 +437,7 @@ class Trainer(AbstractTrainer):
         if self.config["train_neg_sample_args"].get("dynamic", False):
             train_data.get_model(self.model)
         valid_step = 0
+        total_train_time = 0.0  # 仅累计训练时间，不含 valid
 
         for epoch_idx in range(self.start_epoch, self.epochs):
             # train
@@ -443,6 +449,7 @@ class Trainer(AbstractTrainer):
                 sum(train_loss) if isinstance(train_loss, tuple) else train_loss
             )
             training_end_time = time()
+            total_train_time += training_end_time - training_start_time
             train_loss_output = self._generate_train_loss_output(
                 epoch_idx, training_start_time, training_end_time, train_loss
             )
@@ -515,6 +522,13 @@ class Trainer(AbstractTrainer):
 
                 valid_step += 1
 
+        self.total_train_time = total_train_time  # 供实验脚本读取
+        if verbose:
+            self.logger.info(
+                set_color("Train time (excl. valid)", "green")
+                + ": %.2fs (%.2f min)"
+                % (total_train_time, total_train_time / 60.0)
+            )
         self._add_hparam_to_tensorboard(self.best_valid_score)
         return self.best_valid_score, self.best_valid_result
 
@@ -806,7 +820,7 @@ class PretrainTrainer(Trainer):
 
 
 class _StreamingTrainerMixin:
-    """Mixin for models with streaming state (GDN, MoRec, DamRec)."""
+    """Mixin for models with streaming state (GDN, MoRec, DamRec, NestRec, FroRec)."""
 
     def __init__(self, config, model):
         super().__init__(config, model)
@@ -864,6 +878,115 @@ class MoRecTrainer(_StreamingTrainerMixin, Trainer):
 
     def __init__(self, config, model):
         super(MoRecTrainer, self).__init__(config, model)
+
+
+class NestRecTrainer(_StreamingTrainerMixin, Trainer):
+    r"""NestRecTrainer for NestRec streaming recommendation (Nesterov momentum delta)."""
+
+    def __init__(self, config, model):
+        super(NestRecTrainer, self).__init__(config, model)
+
+
+class FroRecTrainer(_StreamingTrainerMixin, Trainer):
+    r"""FroRecTrainer for FroRec streaming recommendation (Frobenius Adam)."""
+
+    def __init__(self, config, model):
+        super(FroRecTrainer, self).__init__(config, model)
+
+
+class StreamingTestThenTrainTrainer(Trainer):
+    r"""Test-Then-Train streaming: single global timeline, predict before train, S never reset."""
+
+    def __init__(self, config, model):
+        super().__init__(config, model)
+        self.logger.info("[StreamingT2T] Test-Then-Train, no reset_streaming_state")
+
+    def fit(
+        self,
+        train_data,
+        valid_data=None,
+        verbose=True,
+        saved=True,
+        show_progress=False,
+        callback_fn=None,
+    ):
+        if saved and self.start_epoch >= self.epochs:
+            self._save_checkpoint(-1, verbose=verbose)
+
+        self.eval_collector.data_collect(train_data)
+        self.tot_item_num = train_data.dataset.item_num
+        if hasattr(train_data.dataset, "get_item_feature"):
+            self.item_tensor = train_data.dataset.get_item_feature().to(self.device)
+        else:
+            self.item_tensor = None
+
+        self.model.train()
+        loss_func = self.model.calculate_loss
+        total_loss = 0.0
+        scaler = amp.GradScaler(enabled=self.enable_scaler)
+        stream_iter = (
+            tqdm(train_data, total=len(train_data), ncols=100, desc=set_color("Stream T2T", "pink"))
+            if show_progress
+            else train_data
+        )
+
+        for batch_idx, interaction in enumerate(stream_iter):
+            interaction = interaction.to(self.device)
+            is_test = interaction.interaction.get("is_test", None) if hasattr(interaction, "interaction") else None
+            if is_test is not None:
+                test_mask = is_test
+                if test_mask.any():
+                    self.model.eval()
+                    with torch.no_grad():
+                        try:
+                            scores = self.model.full_sort_predict(interaction)
+                        except NotImplementedError:
+                            inter_len = interaction.length
+                            new_inter = interaction.to(self.device).repeat_interleave(self.tot_item_num)
+                            batch_size = len(new_inter)
+                            new_inter.update(self.item_tensor.repeat(inter_len))
+                            if batch_size <= self.test_batch_size:
+                                scores = self.model.predict(new_inter)
+                            else:
+                                scores = self._spilt_predict(new_inter, batch_size)
+                        scores = scores.view(-1, self.tot_item_num)
+                        scores[:, 0] = -np.inf
+                        pos_items = interaction[self.config["ITEM_ID_FIELD"]]
+                        test_inter = interaction[test_mask]
+                        test_scores = scores[test_mask]
+                        n_test = test_scores.size(0)
+                        positive_u = torch.arange(n_test, device=self.device)
+                        positive_i = pos_items[test_mask]
+                        if n_test > 0:
+                            self.eval_collector.eval_batch_collect(
+                                test_scores, test_inter, positive_u, positive_i
+                            )
+                    self.model.train()
+
+            self.optimizer.zero_grad()
+            with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
+                loss = loss_func(interaction)
+            if isinstance(loss, tuple):
+                loss = sum(loss)
+            self._check_nan(loss)
+            total_loss += loss.item()
+            scaler.scale(loss).backward()
+            if self.clip_grad_norm:
+                clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
+            scaler.step(self.optimizer)
+            scaler.update()
+
+        self.train_loss_dict[0] = total_loss
+        self.eval_collector.model_collect(self.model)
+        struct = self.eval_collector.get_data_struct()
+        result = self.evaluator.evaluate(struct)
+        self.best_valid_result = result
+        self.best_valid_score = calculate_valid_score(result, self.valid_metric)
+        if verbose:
+            self.logger.info(set_color("Streaming T2T result", "yellow") + f": {result}")
+        if saved:
+            self._save_checkpoint(0, verbose=verbose)
+        return self.best_valid_score, self.best_valid_result
 
 
 class S3RecTrainer(PretrainTrainer):

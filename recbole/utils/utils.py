@@ -85,16 +85,21 @@ def get_model(model_name):
     return model_class
 
 
-def get_trainer(model_type, model_name):
+def get_trainer(model_type, model_name, config=None):
     r"""Automatically select trainer class based on model type and model name
 
     Args:
         model_type (ModelType): model type
         model_name (str): model name
+        config (Config, optional): used when streaming_t2t=True to return StreamingTestThenTrainTrainer
 
     Returns:
         Trainer: trainer class
     """
+    if config is not None and config.final_config_dict.get("streaming_t2t", False):
+        return getattr(
+            importlib.import_module("recbole.trainer"), "StreamingTestThenTrainTrainer"
+        )
     try:
         return getattr(
             importlib.import_module("recbole.trainer"), model_name + "Trainer"

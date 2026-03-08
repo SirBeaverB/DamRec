@@ -1,5 +1,5 @@
 # DamRec: Delta-Adam Memory for Streaming Recommendation
-# Extends GDN with Adam-equivalent state update (TODO)
+# SGD → Adam 等价更新
 
 embedding_size: 64
 dropout_prob: 0.3
@@ -12,7 +12,9 @@ conv_kernel_size: 3
 ffn_ratio: 4
 streaming_mode: False
 
-# Adam-equivalent params (for future implementation)
+# Adam 等价参数 (η 过小会退化成 GDN，0.05 为折中)
 adam_beta1: 0.9
-adam_beta2: 0.999
-adam_eps: 1e-8
+adam_beta2: 0.99      # 流式步数少，加快方差遗忘
+adam_eps: 1e-4        # 适度稳定，不压制自适应
+adam_eta: 0.05        # 0.02 过小易退化成 GDN，0.1 可能过猛
+use_chunk_adam: False   # True=Chunk 级 FLA 加速

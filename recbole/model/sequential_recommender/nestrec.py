@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-# MoRec: Momentum-based Delta Rule for Streaming Recommendation
+# NestRec: Nesterov Momentum for Delta Rule in Streaming Recommendation
 #
 # 两种模式:
-# - Token 级: m_t = μ m_{t-1} + γ (v - S k) ⊗ k^T; S_t = S_{t-1} + m_t (Python 循环)
-# - Chunk 级: FLA 内部一阶 + Chunk 边界宏观动量，可复用 FLA 加速
+# - Token 级: Nesterov 动量，提前看一步的等效更新方向 (Python 循环)
+# - Chunk 级: FLA 内部一阶 + Chunk 边界 Nesterov 动量，可复用 FLA 加速
+#
+# Nesterov 依然是纯粹的线性加法运算，不会像 Adam 那样用逐元素除法破坏
+# 关联记忆矩阵 S 严密的"秩一外积"几何结构。
 
 import torch
 from torch import nn
@@ -11,8 +14,8 @@ from torch.nn.init import xavier_normal_
 
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.layers import (
-    GatedDeltaLayerMomentum,
-    GatedDeltaLayerChunkMomentum,
+    GatedDeltaLayerNesterov,
+    GatedDeltaLayerChunkNesterov,
 )
 from recbole.model.loss import BPRLoss
 
@@ -23,15 +26,15 @@ except ImportError:
     _FLA_AVAILABLE = False
 
 
-class MoRec(SequentialRecommender):
-    r"""MoRec: Momentum-based Delta Rule for Streaming Recommendation.
+class NestRec(SequentialRecommender):
+    r"""NestRec: Nesterov Momentum for Delta Rule in Streaming Recommendation.
 
-    - Token 级动量: m_t = μ m_{t-1} + γ (v - S k) ⊗ k^T; S_t = S_{t-1} + m_t
-    - Chunk 级动量 (use_chunk_momentum): FLA + 宏观 M_new = μ*M + (1-μ)*ΔS, S_next = S_end + η*M
+    - Token 级 Nesterov: M = μ*M + γ*Δ; M_nesterov = μ*M + γ*Δ; S_t = S_{t-1} + M_nesterov
+    - Chunk 级 Nesterov (use_chunk_nesterov): FLA + 宏观 M = μ*M + (1-μ)*ΔS; M_nesterov = μ*M + (1-μ)*ΔS; S_next = S_end + η*M_nesterov
     """
 
     def __init__(self, config, dataset):
-        super(MoRec, self).__init__(config, dataset)
+        super(NestRec, self).__init__(config, dataset)
 
         self.embedding_size = config["embedding_size"]
         self.loss_type = config["loss_type"]
@@ -44,16 +47,20 @@ class MoRec(SequentialRecommender):
         self.conv_kernel_size = config["conv_kernel_size"] if config["conv_kernel_size"] is not None else 3
         self.ffn_ratio = config["ffn_ratio"] if config["ffn_ratio"] is not None else 4
         self.momentum = config["momentum"] if config["momentum"] is not None else 0.9
-        self.momentum_eta = config["momentum_eta"] if config["momentum_eta"] is not None else 0.1
-        use_chunk = config["use_chunk_momentum"] if config["use_chunk_momentum"] is not None else False
-        self.use_chunk_momentum = use_chunk and _FLA_AVAILABLE
+        # momentum_eta=0 会退化成纯 GDN，必须 > 0
+        raw_eta = config.final_config_dict.get("momentum_eta", 0.15)
+        self.momentum_eta = raw_eta if (raw_eta is not None and raw_eta > 0) else 0.15
+        if raw_eta is not None and raw_eta <= 0:
+            self.logger.warning(f"[NestRec] momentum_eta={raw_eta} 会退化成 GDN，已强制为 0.15")
+        use_chunk = config["use_chunk_nesterov"] if config["use_chunk_nesterov"] is not None else False
+        self.use_chunk_nesterov = use_chunk and _FLA_AVAILABLE
 
         self.item_embedding = nn.Embedding(
             self.n_items, self.embedding_size, padding_idx=0
         )
         self.emb_dropout = nn.Dropout(self.dropout_prob)
 
-        layer_cls = GatedDeltaLayerChunkMomentum if self.use_chunk_momentum else GatedDeltaLayerMomentum
+        layer_cls = GatedDeltaLayerChunkNesterov if self.use_chunk_nesterov else GatedDeltaLayerNesterov
         layer_kw = dict(
             d_model=self.embedding_size,
             num_heads=self.num_heads,
@@ -61,9 +68,11 @@ class MoRec(SequentialRecommender):
             ffn_ratio=self.ffn_ratio,
             dropout=self.dropout_prob,
         )
-        if self.use_chunk_momentum:
+        if self.use_chunk_nesterov:
             layer_kw["momentum"] = self.momentum
             layer_kw["momentum_eta"] = self.momentum_eta
+            assert self.momentum_eta > 0, f"NestRec ChunkNesterov: momentum_eta={self.momentum_eta} 会退化成 GDN"
+            self.logger.info(f"[NestRec] ChunkNesterov: momentum_eta={self.momentum_eta} (S = S_end + η*M_nesterov)")
         else:
             layer_kw["momentum"] = self.momentum
 
@@ -81,12 +90,12 @@ class MoRec(SequentialRecommender):
         self._streaming_state = {}
 
         if self.streaming_mode:
-            mode = "chunk-level (FLA)" if self.use_chunk_momentum else "token-level"
+            mode = "chunk-level (FLA)" if self.use_chunk_nesterov else "token-level"
             self.logger.info(
-                "[MoRec] Streaming ON: %s momentum (μ=%.2f)" % (mode, self.momentum)
+                "[NestRec] Streaming ON: %s Nesterov (μ=%.2f)" % (mode, self.momentum)
             )
         else:
-            self.logger.info("[MoRec] Streaming OFF: batch-independent forward")
+            self.logger.info("[NestRec] Streaming OFF: batch-independent forward")
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):

@@ -1,15 +1,15 @@
-# MoRec streaming config - 动量版 delta rule (SGD→Momentum)
-# use_chunk_momentum: True 时用 FLA + Chunk 级宏观动量；False 时用 Token 级 Python 循环
-# Use with: python run_recbole.py --model=MoRec --config_files=recbole/properties/quick_start_config/streaming/sequential_MoRec_streaming.yaml
+# NestRec streaming config - Nesterov 动量版 delta rule (Lookahead Momentum)
+# use_chunk_nesterov: True 时用 FLA + Chunk 级宏观 Nesterov；False 时用 Token 级 Python 循环
+# Use with: python run_recbole.py --model=NestRec --config_files=recbole/properties/quick_start_config/streaming/sequential_NestRec_streaming.yaml
 
 dataset: ml-100k
 MAX_ITEM_LIST_LENGTH: 50
 embedding_size: 64
 streaming_mode: True
 dropout_prob: 0.2
-momentum: 0.9
+momentum: 0.8
 momentum_eta: 0.15
-use_chunk_momentum: True   # FLA 加速 + Chunk 级动量
+use_chunk_nesterov: True   # FLA 加速 + Chunk 级 Nesterov 动量
 train_neg_sample_args: ~
 
 shuffle: False

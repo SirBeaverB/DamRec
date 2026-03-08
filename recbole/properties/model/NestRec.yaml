@@ -1,0 +1,19 @@
+# NestRec: Nesterov Momentum for Delta Rule in Streaming Recommendation
+# Token 级: M = μ*M + γ*Δ; M_nesterov = μ*M + γ*Δ; S_t = S_{t-1} + M_nesterov (Python 循环)
+# Chunk 级: FLA + 宏观 Nesterov 动量，可复用 FLA 加速
+
+embedding_size: 64
+dropout_prob: 0.3
+loss_type: 'CE'
+train_neg_sample_args: ~
+
+n_layers: 1
+num_heads: 4
+conv_kernel_size: 3
+ffn_ratio: 4
+momentum: 0.8              # (float) Nesterov 前瞻视界，保守设低以抗噪 (MoRec 用 0.9)
+momentum_eta: 0.15         # (float) Chunk 级: S_next = S_end + η*M_nesterov，过小会退化成 GDN
+
+use_chunk_nesterov: False   # (bool) True=Chunk 级 FLA 加速，False=Token 级 Python
+
+streaming_mode: False
