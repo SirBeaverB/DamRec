@@ -2,6 +2,12 @@
 /saved*
 *.pth
 
+# Dataset files (RecBole 下载，超过 GitHub 100MB 限制)
+dataset/
+**/ml-10m/
+**/ml-1m/
+**/ml-100k/
+
 .vscode/
 .idea/
 *.pyc
