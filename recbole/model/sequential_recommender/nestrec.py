@@ -25,6 +25,8 @@ try:
 except ImportError:
     _FLA_AVAILABLE = False
 
+DEBUG_T2T_STREAMING = False  # 设为 True 可开启算子/动量调试输出
+
 
 class NestRec(SequentialRecommender):
     r"""NestRec: Nesterov Momentum for Delta Rule in Streaming Recommendation.
@@ -141,6 +143,10 @@ class NestRec(SequentialRecommender):
     def forward_with_streaming(self, item_seq, item_seq_len, user_ids, update_state=True):
         """Streaming: per-user (S, M) state per layer.
         update_state=False: read-only for predict, avoids double-update in T2T."""
+        if DEBUG_T2T_STREAMING and not getattr(NestRec, "_t2t_debug_layer_printed", False):
+            print(f"\n[DEBUG] NestRec Layer Type: {type(self.layers[0]).__name__}, FLA_AVAILABLE: {_FLA_AVAILABLE}, use_chunk_nesterov: {self.use_chunk_nesterov}\n")
+            NestRec._t2t_debug_layer_printed = True
+
         item_seq_emb = self.item_embedding(item_seq)
         item_seq_emb = self.emb_dropout(item_seq_emb)
 
@@ -202,6 +208,12 @@ class NestRec(SequentialRecommender):
                     if new_len > start_idx[i]:
                         stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
                         stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
+                        if DEBUG_T2T_STREAMING:
+                            cnt = getattr(NestRec, "_t2t_debug_m_count", 0)
+                            if cnt < 50:
+                                m_mean = sum(m.abs().mean().item() for m in stored_M) / len(stored_M)
+                                print(f"[DEBUG] NestRec uid={uid} Step {new_len}, M_mean: {m_mean:.6f}")
+                                NestRec._t2t_debug_m_count = cnt + 1
                         self._streaming_state[uid] = (stored_S, stored_M, new_len, device)
 
         return out

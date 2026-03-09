@@ -48,9 +48,11 @@ CONFIG_TO_MODEL = {
 }
 
 
-def run_single_model(model_key, config_file, dataset="ml-100k", max_seq_len=None, epochs=None, worker=None, saved=False, show_progress=False):
-    """运行单个模型，返回 (valid_recall, test_recall, train_time_sec, peak_mem_gb) 或 None（失败时）"""
-    model_name = CONFIG_TO_MODEL[model_key]
+def run_single_model(model_key, config_file, dataset="ml-100k", max_seq_len=None, epochs=None, worker=None, saved=False, show_progress=False, checkpoint_dir=None):
+    """运行单个模型，返回 (valid_result_dict, test_result_dict, train_time_sec, peak_mem_gb) 或 None（失败时）。
+    valid_result_dict / test_result_dict 包含 recall@10, mrr@10, ndcg@10, hit@10, precision@10 等。
+    model_key 若不在 CONFIG_TO_MODEL 中（如 RecBole baseline），则直接用 model_key 作为模型类名。"""
+    model_name = CONFIG_TO_MODEL.get(model_key, model_key)
     print(f"\n{'='*60}")
     print(f"Running {model_key} ({model_name}) ...")
     print("=" * 60)
@@ -62,6 +64,8 @@ def run_single_model(model_key, config_file, dataset="ml-100k", max_seq_len=None
         config_dict["epochs"] = epochs
     if worker is not None:
         config_dict["worker"] = worker
+    if checkpoint_dir is not None:
+        config_dict["checkpoint_dir"] = checkpoint_dir
 
     try:
         config = Config(
@@ -122,14 +126,14 @@ def run_single_model(model_key, config_file, dataset="ml-100k", max_seq_len=None
         if torch.cuda.is_available():
             peak_mem_gb = torch.cuda.max_memory_allocated() / 1024**3
 
-        valid_recall = float(best_valid_result.get("recall@10", 0.0))
-        test_recall = float(test_result.get("recall@10", 0.0))
         train_time = getattr(trainer, "total_train_time", 0.0)
+        valid_result = {k: float(v) for k, v in best_valid_result.items()}
+        test_result = {k: float(v) for k, v in test_result.items()}
 
         logger.info(set_color("best valid ", "yellow") + f": {best_valid_result}")
         logger.info(set_color("test result", "yellow") + f": {test_result}")
 
-        return valid_recall, test_recall, train_time, peak_mem_gb
+        return valid_result, test_result, train_time, peak_mem_gb
 
     except Exception as e:
         print(f"[ERROR] {model_key} failed: {e}")
@@ -188,7 +192,9 @@ def main():
             time_row += "N/A\t\t"
             mem_row += "N/A\t\t"
         else:
-            vr, tr, tt, mem = r[0], r[1], r[2], r[3]
+            vres, tres, tt, mem = r[0], r[1], r[2], r[3]
+            vr = vres.get("recall@10") if isinstance(vres, dict) else vres
+            tr = tres.get("recall@10") if isinstance(tres, dict) else tres
             valid_row += f"{fmt(vr)}\t\t"
             test_row += f"{fmt(tr)}\t\t"
             time_row += f"{fmt(tt):>8}\t"
@@ -217,9 +223,13 @@ def main():
             if r is None:
                 f.write(f"{k},N/A,N/A,N/A,N/A\n")
             else:
-                vr, tr, tt, mem = r[0], r[1], r[2], r[3]
+                vres, tres, tt, mem = r[0], r[1], r[2], r[3]
+                vr = vres.get("recall@10") if isinstance(vres, dict) else vres
+                tr = tres.get("recall@10") if isinstance(tres, dict) else tres
+                vr_str = f"{vr:.4f}" if vr is not None else "N/A"
+                tr_str = f"{tr:.4f}" if tr is not None else "N/A"
                 mem_str = f"{mem:.2f}" if mem is not None else "N/A"
-                f.write(f"{k},{vr:.4f},{tr:.4f},{tt:.2f},{mem_str}\n")
+                f.write(f"{k},{vr_str},{tr_str},{tt:.2f},{mem_str}\n")
     print(f"CSV saved to {csv_file}")
 
 

@@ -15,6 +15,8 @@ from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.layers import GatedDeltaLayer
 from recbole.model.loss import BPRLoss
 
+DEBUG_T2T_STREAMING = False  # 设为 True 可开启算子调试输出
+
 
 class GDN(SequentialRecommender):
     r"""GDN: Gated Delta Networks for Sequential Recommendation.
@@ -113,6 +115,10 @@ class GDN(SequentialRecommender):
     def forward_with_streaming(self, item_seq, item_seq_len, user_ids, update_state=True):
         """Streaming: incremental update only, per-user state per layer.
         update_state=False: read-only for predict, avoids double-update in T2T."""
+        if DEBUG_T2T_STREAMING and not getattr(GDN, "_t2t_debug_layer_printed", False):
+            print(f"\n[DEBUG] GDN Layer Type: {type(self.layers[0]).__name__}, use_fla: {self.use_fla}\n")
+            GDN._t2t_debug_layer_printed = True
+
         item_seq_emb = self.item_embedding(item_seq)
         item_seq_emb = self.emb_dropout(item_seq_emb)
 

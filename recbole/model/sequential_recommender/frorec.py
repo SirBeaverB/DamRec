@@ -18,6 +18,8 @@ try:
 except ImportError:
     _FLA_AVAILABLE = False
 
+DEBUG_T2T_STREAMING = False  # 设为 True 可开启算子/动量调试输出
+
 
 class FroRec(SequentialRecommender):
     r"""FroRec: Frobenius Adam for Delta Rule in Streaming Recommendation.
@@ -125,6 +127,10 @@ class FroRec(SequentialRecommender):
 
     def forward_with_streaming(self, item_seq, item_seq_len, user_ids, update_state=True):
         """update_state=False: read-only for predict, avoids double-update in T2T."""
+        if DEBUG_T2T_STREAMING and not getattr(FroRec, "_t2t_debug_layer_printed", False):
+            print(f"\n[DEBUG] FroRec Layer Type: {type(self.layers[0]).__name__}, FLA_AVAILABLE: {_FLA_AVAILABLE}\n")
+            FroRec._t2t_debug_layer_printed = True
+
         item_seq_emb = self.item_embedding(item_seq)
         item_seq_emb = self.emb_dropout(item_seq_emb)
 
@@ -205,6 +211,12 @@ class FroRec(SequentialRecommender):
                         stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
                         stored_V = tuple(v[i].detach().clone() for v in V_batch_list)
                         stored_step = tuple(st[i].detach().clone() for st in step_batch_list)
+                        if DEBUG_T2T_STREAMING:
+                            cnt = getattr(FroRec, "_t2t_debug_m_count", 0)
+                            if cnt < 50:
+                                m_mean = sum(m.abs().mean().item() for m in stored_M) / len(stored_M)
+                                print(f"[DEBUG] FroRec uid={uid} Step {new_len}, M_mean: {m_mean:.6f}")
+                                FroRec._t2t_debug_m_count = cnt + 1
                         self._streaming_state[uid] = (stored_S, stored_M, stored_V, stored_step, new_len, device)
 
         return out

@@ -74,7 +74,9 @@ def main():
             time_row += "N/A\t\t"
             mem_row += "N/A\t\t"
         else:
-            vr, tr, tt, mem = r[0], r[1], r[2], r[3]
+            vres, tres, tt, mem = r[0], r[1], r[2], r[3]
+            vr = vres.get("recall@10") if isinstance(vres, dict) else vres
+            tr = tres.get("recall@10") if isinstance(tres, dict) else tres
             valid_row += f"{fmt(vr)}\t\t"
             test_row += f"{fmt(tr)}\t\t"
             time_row += f"{fmt(tt):>8}\t"
@@ -102,9 +104,13 @@ def main():
             if r is None:
                 f.write(f"{k},N/A,N/A,N/A,N/A\n")
             else:
-                vr, tr, tt, mem = r[0], r[1], r[2], r[3]
+                vres, tres, tt, mem = r[0], r[1], r[2], r[3]
+                vr = vres.get("recall@10") if isinstance(vres, dict) else vres
+                tr = tres.get("recall@10") if isinstance(tres, dict) else tres
+                vr_str = f"{vr:.4f}" if vr is not None else "N/A"
+                tr_str = f"{tr:.4f}" if tr is not None else "N/A"
                 mem_str = f"{mem:.2f}" if mem is not None else "N/A"
-                f.write(f"{k},{vr:.4f},{tr:.4f},{tt:.2f},{mem_str}\n")
+                f.write(f"{k},{vr_str},{tr_str},{tt:.2f},{mem_str}\n")
     print(f"CSV saved to {csv_file}")
 
 

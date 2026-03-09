@@ -35,21 +35,74 @@ DamRec 的核心创新灵感来源于序列建模与最优化理论之间深层�
 - 尝试fro adam, 猜测可能在平稳数据上表现优异，但是不适用于推荐任务（大概）
 
 3. 进行测试（baseline GDN、linrec、mamba4rec以及其他）(epoch的必要性、SGD\momentum\adm、长短序列等等？) ✅ 见「综合测试脚本」
-- non streaming测试（参数调优不充分，还有改进空间）
+- non streaming测试（参数调优不充分，还有改进空间）（GDN和sas结构不一样，对lr的敏感度可能不一样，可以试试调）
+- 跑一下其他baseline, 比如sas、bert4rec\linrec、mamba4rec\fmlp-rec、GRU、retrain_sas
+在L=64时sas速度挺快，考虑把L拉到很长
 
-
-4. 测试t2t
+4. 测试t2t ✅
+直接训练t2t显然效果不行，应该先预训练。已实现
+需要先进行预训练，然后再测试为了效率，可以先用1M的前80%数据进行预训练，后面的用于t2t测试
+- 写代码 ✅
+- 测试（用GDN预训练，然后换不同的几个模型）
+- baseline应该怎么测？谁做预训练谁做t2t?应该不能嫁接
 
 ---
 ## 快速测试
 
 ```bash
+# 非流式
 # ml-100k: L=50, epochs=100
 python scripts/run_non_streaming_experiments_100k.py
 
-# ml-1m: L=128, epochs=150
+# ml-1m: L=128(默认), epochs=150
 python scripts/run_non_streaming_experiments_1m.py
+
+# ml-1m: L=64
+python scripts/run_non_streaming_experiments_1m.py --max_seq_len 64
+
+# Baseline 实验（SASRec、LinRec、GRU4Rec、LightSANs，与 non_streaming_1m 同配置）
+python scripts/run_baseline_experiments_1m.py
+python scripts/run_baseline_experiments_1m.py -L 64 --saved
+
+# T2T 流式（与 non_streaming 同格式表格）
+# ml-100k: L=50
+python scripts/run_streaming_t2t_experiments_100k.py
+
+# ml-1m: L=128
+python scripts/run_streaming_t2t_experiments_1m.py
+
+# 预训练(80%) + T2T(20%) 实验（推荐先预训练再 T2T）
+python scripts/prepare_ml1m_80_20_split.py   # 首次运行需准备数据
+python scripts/run_pretrain_t2t_1m.py --mode pretrain
+python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/pretrain_t2t_1m/GDN-xxx.pth
+# 或从 experiment 已有 checkpoint 直接 T2T
+python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/non_streaming_1m_L128/GDN-xxx.pth
+# 嫁接：用 GDN 离线权重热启动任意变体做 T2T（strict=False）
+python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model DamRec
+python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model MoRec
+python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model NestRec
+python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model FroRec
+
+# 统一脚本：GDN 预训练一次，五模型各跑 T2T，输出 non_streaming 风格表格
+python scripts/run_gdn_pretrain_t2t_unified.py
+python scripts/run_gdn_pretrain_t2t_unified.py --ckp saved/GDN-xxx.pth   # 跳过预训练
+python scripts/run_gdn_pretrain_t2t_unified.py -L 64                     # L=64
 ```
+
+### GDN 嫁接（Grafting）说明
+GDN 与 MoRec、NestRec、DamRec、FroRec 共享大部分参数（item_embedding、q/k/v_proj、q/k/v_conv、gamma_gate、out_gate、ffn_*、output_proj），可用 `strict=False` 将 GDN 的离线权重嫁接至任意变体做 T2T 热启动：
+
+| 目标模型 | 兼容性 | 说明 |
+|----------|--------|------|
+| **MoRec** | ✓ | Token 级无 beta_gate（忽略 GDN 的 beta_gate）；Chunk 级完全匹配。M 从 0 吸收流式。 |
+| **NestRec** | ✓ | 完全匹配（含 beta_gate）。M 从 0 吸收流式。 |
+| **DamRec** | ✓ | Token 级无 beta_gate；Chunk 级完全匹配。M/V 从 0 吸收流式。 |
+| **FroRec** | ✓ | 完全匹配（Chunk 级）。M/V 从 0 吸收流式。 |
+| **GDN** | ✓ | 同模型直接加载，无需 strict=False。 |
+
+用法：`--ckp saved/GDN-xxx.pth --model <MoRec|NestRec|DamRec|FroRec>`
+
+**流式学习率**：预训练 lr=0.001 往往不等于流式微调的最佳 lr。T2T 阶段数据逐条来，易被噪声带偏，脚本默认将流式 lr 降为 0.0001（10 倍）。若发现热启动后指标轻微崩塌，可尝试 `--t2t_lr 0.00005` 或更小；若收敛过慢可尝试 `--t2t_lr 0.0002`。
 
 ### 非流式 L / Chunk 配置说明
 - **L (MAX_ITEM_LIST_LENGTH)**：序列长度，默认 50。ml-100k 用 50 即可；**ml-1m 用户历史更长，建议 L=128**。`run_non_streaming_experiments` 在 ml-1m 下已自动设为 128。
@@ -67,13 +120,36 @@ python scripts/run_comprehensive_experiments.py --max_seq_len 128
 ```
 
 ### T2T 流式实验脚本 (Step 4)
+批量运行 5 个模型，输出与 non_streaming 相同格式的表格（valid/test recall@10、time、显存）：
+```bash
+# ml-100k: L=50
+python scripts/run_streaming_t2t_experiments_100k.py
+
+# ml-1m: L=128
+python scripts/run_streaming_t2t_experiments_1m.py
+```
+
+通用脚本（支持 --dataset、--model 参数）：
 ```bash
 python scripts/run_streaming_t2t_experiments.py
 python scripts/run_streaming_t2t_experiments.py --dataset ml-100k
 python scripts/run_streaming_t2t_experiments.py --model GDN
 ```
 
+### 输出文件命名
+结果保存在 `experiment_results/` 下，按脚本区分：
+| 脚本 | 输出文件 |
+|------|----------|
+| non_streaming_100k | `non_streaming_100k_{timestamp}.txt` / `.csv` |
+| non_streaming_1m | `non_streaming_1m_L{L}_{timestamp}.txt` / `.csv`（L=64 或 128） |
+| baseline_1m | `baseline_1m_L{L}_{timestamp}.txt` / `.csv`（SASRec、GRU4Rec、LightSANs） |
+| streaming_t2t_100k | `streaming_t2t_100k_{timestamp}.txt` / `.csv` |
+| streaming_t2t_1m | `streaming_t2t_1m_{timestamp}.txt` / `.csv` |
+| run_streaming_t2t_experiments.py | `streaming_t2t_{dataset}_{timestamp}.txt` |
+| pretrain_t2t_1m | `pretrain_t2t_1m_{timestamp}.txt`（80% 预训练 + 20% T2T） |
+| gdn_pretrain_t2t_unified | `gdn_pretrain_t2t_unified_{timestamp}.txt` / `.csv`（GDN 预训练 + 五模型 T2T 表格） |
 
+---
 
 ## 流式数据流实现说明 (已完成)
 

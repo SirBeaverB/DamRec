@@ -14,6 +14,7 @@ from recbole.model.sequential_recommender.gru4reckg import GRU4RecKG
 from recbole.model.sequential_recommender.hgn import HGN
 from recbole.model.sequential_recommender.hrm import HRM
 from recbole.model.sequential_recommender.ksr import KSR
+from recbole.model.sequential_recommender.linrec import LinRec
 from recbole.model.sequential_recommender.lightsans import LightSANs
 from recbole.model.sequential_recommender.narm import NARM
 from recbole.model.sequential_recommender.nextitnet import NextItNet

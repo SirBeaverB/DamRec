@@ -637,6 +637,238 @@ class TransformerEncoder(nn.Module):
         return all_encoder_layers
 
 
+class LinRecMultiHeadAttention(nn.Module):
+    r"""LinRec: L2-Normalized Linear Attention for sequential recommendation (SIGIR 2023).
+
+    Formula: A'(Q,K,V) = ρ1(elu(Q)) @ (ρ2(elu(K))^T @ V)
+    - ρ1: row-wise L2 norm for Q: Q_i / (sqrt(d) * ||Q_i||_2)
+    - ρ2: column-wise L2 norm for K: K_j / (sqrt(N) * ||K_j||_2)
+    - Causal: strictly uses K[:t+1], V[:t+1] at position t (no future leakage).
+
+    Streaming: uses row-wise K norm to enable O(1) recurrence: S_t = S_{t-1} + (k'_t)^T @ v_t.
+    """
+
+    def __init__(
+        self,
+        n_heads,
+        hidden_size,
+        hidden_dropout_prob,
+        attn_dropout_prob,
+        layer_norm_eps,
+    ):
+        super(LinRecMultiHeadAttention, self).__init__()
+        if hidden_size % n_heads != 0:
+            raise ValueError(
+                "The hidden size (%d) is not a multiple of the number of attention "
+                "heads (%d)" % (hidden_size, n_heads)
+            )
+
+        self.num_attention_heads = n_heads
+        self.attention_head_size = int(hidden_size / n_heads)
+        self.all_head_size = self.num_attention_heads * self.attention_head_size
+        self.eps = 1e-8
+
+        self.query = nn.Linear(hidden_size, self.all_head_size)
+        self.key = nn.Linear(hidden_size, self.all_head_size)
+        self.value = nn.Linear(hidden_size, self.all_head_size)
+
+        self.attn_dropout = nn.Dropout(attn_dropout_prob)
+        self.dense = nn.Linear(hidden_size, hidden_size)
+        self.LayerNorm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
+        self.out_dropout = nn.Dropout(hidden_dropout_prob)
+
+    def _transpose_for_scores(self, x):
+        new_x_shape = x.size()[:-1] + (
+            self.num_attention_heads,
+            self.attention_head_size,
+        )
+        x = x.view(*new_x_shape)
+        return x
+
+    def _rho1(self, Q):
+        """Row-wise L2 norm: Q_i / (sqrt(d) * ||Q_i||_2)"""
+        d = Q.size(-1)
+        norm = Q.norm(dim=-1, keepdim=True).clamp(min=self.eps)
+        return Q / (math.sqrt(d) * norm)
+
+    def _rho2(self, K):
+        """Column-wise L2 norm: K_j / (sqrt(N) * ||K_j||_2)"""
+        N = K.size(-2)
+        norm = K.norm(dim=-2, keepdim=True).clamp(min=self.eps)
+        return K / (math.sqrt(N) * norm)
+
+    def forward(self, input_tensor, attention_mask=None, prev_KV=None, update_mask=None):
+        """Forward with optional streaming state.
+
+        prev_KV: [B, n_heads, d, d] from previous run (streaming).
+        update_mask: [B, L] bool, True = update KV at this position (streaming).
+        Returns (hidden_states, new_KV) if prev_KV/update_mask given, else hidden_states.
+        """
+        streaming = prev_KV is not None and update_mask is not None
+        B, L, _ = input_tensor.size()
+        mixed_query = self.query(input_tensor)
+        mixed_key = self.key(input_tensor)
+        mixed_value = self.value(input_tensor)
+
+        Q = self._transpose_for_scores(mixed_query)  # [B, L, n_heads, d]
+        K = self._transpose_for_scores(mixed_key)
+        V = self._transpose_for_scores(mixed_value)
+
+        if streaming:
+            return self._forward_streaming(
+                input_tensor, Q, K, V, prev_KV, update_mask
+            )
+
+        outputs = []
+        for t in range(L):
+            Q_t = Q[:, t, :, :]
+            K_t = K[:, : t + 1, :, :]
+            V_t = V[:, : t + 1, :, :]
+
+            Q_t = fn.elu(Q_t)
+            K_t = fn.elu(K_t)
+            V_t = fn.elu(V_t)
+
+            Q_t = self._rho1(Q_t)
+            N_t = t + 1
+            norm_K = K_t.norm(dim=1, keepdim=True).clamp(min=self.eps)
+            K_t = K_t / (math.sqrt(N_t) * norm_K)
+
+            KV = torch.einsum("btnc,btnv->bncv", K_t, V_t)
+            out_t = torch.einsum("bnd,bncv->bnv", Q_t, KV)
+            outputs.append(out_t)
+
+        context_layer = torch.stack(outputs, dim=1)
+        return self._output_proj(input_tensor, context_layer)
+
+    def _forward_streaming(self, input_tensor, Q, K, V, prev_KV, update_mask):
+        """Streaming: O(1) per-token via row-wise K norm recurrence S_t = S_{t-1} + (k'_t)^T @ v_t.
+        update_mask: [B, L] bool, True = update KV at (b,t)."""
+        B, L = Q.size(0), Q.size(1)
+        d = self.attention_head_size
+        device = Q.device
+        KV = prev_KV if prev_KV is not None else torch.zeros(
+            B, self.num_attention_heads, d, d, device=device, dtype=Q.dtype
+        )
+        outputs = []
+        for t in range(L):
+            Q_t = fn.elu(Q[:, t, :, :])
+            K_t = fn.elu(K[:, t, :, :])
+            V_t = fn.elu(V[:, t, :, :])
+            k_norm = K_t.norm(dim=-1, keepdim=True).clamp(min=self.eps)
+            k_prime = K_t / k_norm
+            delta = torch.einsum("bnd,bnv->bndv", k_prime, V_t)
+            inc = update_mask[:, t].view(B, 1, 1, 1).to(delta.dtype)
+            KV = KV + inc * delta
+            Q_t = self._rho1(Q_t)
+            out_t = torch.einsum("bnd,bncv->bnv", Q_t, KV)
+            outputs.append(out_t)
+        context_layer = torch.stack(outputs, dim=1)
+        return self._output_proj(input_tensor, context_layer), KV
+
+    def _output_proj(self, input_tensor, context_layer):
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(*new_context_layer_shape)
+        hidden_states = self.dense(context_layer)
+        hidden_states = self.attn_dropout(hidden_states)
+        hidden_states = self.out_dropout(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        return hidden_states
+
+
+class LinRecLayer(nn.Module):
+    """One LinRec layer: LinRec attention (causal, no target leakage) + feed-forward."""
+
+    def __init__(
+        self,
+        n_heads,
+        hidden_size,
+        inner_size,
+        hidden_dropout_prob,
+        attn_dropout_prob,
+        hidden_act,
+        layer_norm_eps,
+    ):
+        super(LinRecLayer, self).__init__()
+        self.attention = LinRecMultiHeadAttention(
+            n_heads, hidden_size, hidden_dropout_prob, attn_dropout_prob, layer_norm_eps
+        )
+        self.feed_forward = FeedForward(
+            hidden_size,
+            inner_size,
+            hidden_dropout_prob,
+            hidden_act,
+            layer_norm_eps,
+        )
+
+    def forward(self, hidden_states, attention_mask=None, prev_KV=None, update_mask=None):
+        if prev_KV is not None and update_mask is not None:
+            attn_out, new_KV = self.attention(
+                hidden_states, attention_mask, prev_KV=prev_KV, update_mask=update_mask
+            )
+            return self.feed_forward(attn_out), new_KV
+        attn_out = self.attention(hidden_states, attention_mask)
+        return self.feed_forward(attn_out)
+
+
+class LinRecEncoder(nn.Module):
+    """LinRec encoder: stack of LinRec layers. Supports streaming state."""
+
+    def __init__(
+        self,
+        n_layers=2,
+        n_heads=2,
+        hidden_size=64,
+        inner_size=256,
+        hidden_dropout_prob=0.5,
+        attn_dropout_prob=0.5,
+        hidden_act="gelu",
+        layer_norm_eps=1e-12,
+    ):
+        super(LinRecEncoder, self).__init__()
+        layer = LinRecLayer(
+            n_heads,
+            hidden_size,
+            inner_size,
+            hidden_dropout_prob,
+            attn_dropout_prob,
+            hidden_act,
+            layer_norm_eps,
+        )
+        self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(n_layers)])
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        output_all_encoded_layers=True,
+        prev_KV_list=None,
+        update_mask=None,
+    ):
+        streaming = prev_KV_list is not None and update_mask is not None
+        KV_list = prev_KV_list if prev_KV_list is not None else [None] * len(self.layer)
+        all_encoder_layers = []
+        new_KV_list = []
+        for layer_idx, layer_module in enumerate(self.layer):
+            if streaming:
+                hidden_states, new_KV = layer_module(
+                    hidden_states,
+                    attention_mask,
+                    prev_KV=KV_list[layer_idx],
+                    update_mask=update_mask,
+                )
+                new_KV_list.append(new_KV)
+            else:
+                hidden_states = layer_module(hidden_states, attention_mask)
+            if output_all_encoded_layers:
+                all_encoder_layers.append(hidden_states)
+        if not output_all_encoded_layers:
+            all_encoder_layers.append(hidden_states)
+        if streaming:
+            return all_encoder_layers, new_KV_list
+        return all_encoder_layers
+
+
 class ItemToInterestAggregation(nn.Module):
     def __init__(self, seq_len, hidden_size, k_interests=5):
         super().__init__()

@@ -1,0 +1,19 @@
+# TransRec - 翻译模型序列推荐 (He et al., 2017)
+
+dataset: ml-1m
+MAX_ITEM_LIST_LENGTH: 128
+embedding_size: 64
+streaming_mode: False
+train_neg_sample_args: ~
+
+eval_args:
+  split: {'LS': 'valid_and_test'}
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 4096
+eval_batch_size: 2048
+epochs: 150
+stopping_step: 10
+learning_rate: 0.001

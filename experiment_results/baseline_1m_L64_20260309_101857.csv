@@ -1,0 +1,4 @@
+model,valid_recall@10,valid_mrr@10,valid_ndcg@10,valid_hit@10,valid_precision@10,test_recall@10,test_mrr@10,test_ndcg@10,test_hit@10,test_precision@10,train_time_sec,peak_mem_gb
+SASRec,0.3134,0.1346,0.1762,0.3134,0.0313,0.2919,0.1292,0.1671,0.2919,0.0292,1640.64,4.72
+GRU4Rec,0.3093,0.1397,0.1794,0.3093,0.0309,0.2934,0.1334,0.1710,0.2934,0.0293,864.26,3.75
+LightSANs,0.3252,0.1409,0.1840,0.3252,0.0325,0.3065,0.1351,0.1752,0.3065,0.0306,2816.03,4.62
