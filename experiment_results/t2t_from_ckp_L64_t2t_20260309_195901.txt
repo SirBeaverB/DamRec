@@ -1,0 +1,25 @@
+T2T 集成实验：从 checkpoint 加载预训练，五模型 (ml-1m 80/20)
+ckp=saved/gdn_pretrain_t2t_unified_L64/GDN-Mar-09-2026_17-45-53.pth, L=64, mode=t2t, time=20260309_195901
+T2T 仅有一次评估（流式 test 点），valid 列填 N/A
+
+--- VALID ---
+模型			GDN	Mo	Nest	Adam	Fro
+------------------------------------------------------------------------------------------
+recall@10			N/A		N/A		N/A		N/A		N/A		
+mrr@10			N/A		N/A		N/A		N/A		N/A		
+ndcg@10			N/A		N/A		N/A		N/A		N/A		
+hit@10			N/A		N/A		N/A		N/A		N/A		
+precision@10			N/A		N/A		N/A		N/A		N/A		
+
+--- TEST ---
+模型			GDN	Mo	Nest	Adam	Fro
+------------------------------------------------------------------------------------------
+recall@10			N/A		N/A		N/A		N/A		N/A		
+mrr@10			N/A		N/A		N/A		N/A		N/A		
+ndcg@10			N/A		N/A		N/A		N/A		N/A		
+hit@10			N/A		N/A		N/A		N/A		N/A		
+precision@10			N/A		N/A		N/A		N/A		N/A		
+
+--- T2T 耗时 ---
+time (s)		N/A		N/A		N/A		N/A		N/A		
+显存 (GB)		N/A		N/A		N/A		N/A		N/A		

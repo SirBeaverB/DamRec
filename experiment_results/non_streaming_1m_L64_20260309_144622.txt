@@ -1,0 +1,25 @@
+非流式实验 (streaming_mode=False) - ml-1m
+dataset=ml-1m, L=64, epochs=150, time=20260309_144622
+checkpoint_dir=/root/DamRec/saved/non_streaming_1m_L64
+
+--- VALID ---
+模型			GDN	Mo	Nest	Adam	Fro
+------------------------------------------------------------------------------------------
+recall@10			N/A		N/A		N/A		N/A		N/A		
+mrr@10			N/A		N/A		N/A		N/A		N/A		
+ndcg@10			N/A		N/A		N/A		N/A		N/A		
+hit@10			N/A		N/A		N/A		N/A		N/A		
+precision@10			N/A		N/A		N/A		N/A		N/A		
+
+--- TEST ---
+模型			GDN	Mo	Nest	Adam	Fro
+------------------------------------------------------------------------------------------
+recall@10			N/A		N/A		N/A		N/A		N/A		
+mrr@10			N/A		N/A		N/A		N/A		N/A		
+ndcg@10			N/A		N/A		N/A		N/A		N/A		
+hit@10			N/A		N/A		N/A		N/A		N/A		
+precision@10			N/A		N/A		N/A		N/A		N/A		
+
+--- 训练 ---
+time (s)		N/A		N/A		N/A		N/A		N/A		
+显存 (GB)		N/A		N/A		N/A		N/A		N/A		

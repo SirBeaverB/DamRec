@@ -1,0 +1,6 @@
+model,valid_recall@10,valid_mrr@10,valid_ndcg@10,valid_hit@10,valid_precision@10,test_recall@10,test_mrr@10,test_ndcg@10,test_hit@10,test_precision@10,t2t_time_sec,peak_mem_gb
+GDN,N/A,N/A,N/A,N/A,N/A,0.0110,0.0034,0.0051,0.0110,0.0011,5.69,2.66
+Mo,N/A,N/A,N/A,N/A,N/A,0.0110,0.0034,0.0051,0.0110,0.0011,6.18,2.81
+Nest,N/A,N/A,N/A,N/A,N/A,0.0109,0.0034,0.0051,0.0109,0.0011,6.27,2.81
+Adam,N/A,N/A,N/A,N/A,N/A,0.0110,0.0034,0.0051,0.0110,0.0011,6.66,3.24
+Fro,N/A,N/A,N/A,N/A,N/A,0.0109,0.0034,0.0051,0.0109,0.0011,6.63,2.90

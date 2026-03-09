@@ -95,7 +95,6 @@ class SequentialDataset(Dataset):
 
         self._aug_presets()
 
-        self._check_field("uid_field", "time_field")
         max_item_list_len = self.config["MAX_ITEM_LIST_LENGTH"]
         self.sort(by=[self.uid_field, self.time_field], ascending=True)
         last_uid = None

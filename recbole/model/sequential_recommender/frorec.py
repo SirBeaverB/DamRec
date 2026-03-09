@@ -138,18 +138,16 @@ class FroRec(SequentialRecommender):
         device = item_seq_emb.device
         valid_mask = self._valid_mask(item_seq_emb)
 
-        seq_idx = torch.arange(seq_len, device=device).unsqueeze(0)
-        start_idx = []
+        update_mask = torch.zeros_like(item_seq_emb[:, :, 0], dtype=torch.bool)
         for i in range(batch_size):
-            uid = user_ids[i].item()
-            if uid in self._streaming_state:
-                state = self._streaming_state[uid]
-                start_idx.append(state[4])
+            valid_len = item_seq_len[i].item()
+            if valid_len == 0:
+                continue
+            if user_ids[i].item() in self._streaming_state:
+                update_mask[i, valid_len - 1] = True
             else:
-                start_idx.append(0)
-        start_idx_tensor = torch.tensor(start_idx, device=device, dtype=torch.long).unsqueeze(1)
-        inc_mask = seq_idx >= start_idx_tensor
-        update_mask = valid_mask & inc_mask
+                update_mask[i, :valid_len] = True
+        update_mask = update_mask & valid_mask
 
         S_batch_list, M_batch_list, V_batch_list = [], [], []
         step_batch_list = []
@@ -206,18 +204,17 @@ class FroRec(SequentialRecommender):
                 for i in range(batch_size):
                     uid = user_ids[i].item()
                     new_len = item_seq_len[i].item()
-                    if new_len > start_idx[i]:
-                        stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
-                        stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
-                        stored_V = tuple(v[i].detach().clone() for v in V_batch_list)
-                        stored_step = tuple(st[i].detach().clone() for st in step_batch_list)
-                        if DEBUG_T2T_STREAMING:
-                            cnt = getattr(FroRec, "_t2t_debug_m_count", 0)
-                            if cnt < 50:
-                                m_mean = sum(m.abs().mean().item() for m in stored_M) / len(stored_M)
-                                print(f"[DEBUG] FroRec uid={uid} Step {new_len}, M_mean: {m_mean:.6f}")
-                                FroRec._t2t_debug_m_count = cnt + 1
-                        self._streaming_state[uid] = (stored_S, stored_M, stored_V, stored_step, new_len, device)
+                    stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
+                    stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
+                    stored_V = tuple(v[i].detach().clone() for v in V_batch_list)
+                    stored_step = tuple(st[i].detach().clone() for st in step_batch_list)
+                    if DEBUG_T2T_STREAMING:
+                        cnt = getattr(FroRec, "_t2t_debug_m_count", 0)
+                        if cnt < 50:
+                            m_mean = sum(m.abs().mean().item() for m in stored_M) / len(stored_M)
+                            print(f"[DEBUG] FroRec uid={uid} Step {new_len}, M_mean: {m_mean:.6f}")
+                            FroRec._t2t_debug_m_count = cnt + 1
+                    self._streaming_state[uid] = (stored_S, stored_M, stored_V, stored_step, new_len, device)
 
         return out
 

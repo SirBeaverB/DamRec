@@ -159,8 +159,33 @@ def data_preparation(config, dataset):
             - test_data (AbstractDataLoader): The dataloader for testing.
     """
     if config.final_config_dict.get("streaming_t2t", False):
-        from recbole.data.streaming_timeline import create_streaming_timeline_dataloader
+        from recbole.data.streaming_timeline import (
+            create_streaming_timeline_dataloader,
+            _align_t2t_vocab_to_pretrain,
+        )
+        from recbole.config import Config
+
+        pretrain_name = config.final_config_dict.get("streaming_pretrain_dataset")
+        pretrain_dataset = None
+        if pretrain_name:
+            # 构建预训练数据集以获取词表（RecBole 按首次出现分配 ID，pretrain/t2t 会错位）
+            cfg_files = getattr(config, "config_file_list", None)
+            if cfg_files is None:
+                cfg_files = config.final_config_dict.get("config_file_list")
+            pretrain_config = Config(
+                model=config["model"],
+                dataset=pretrain_name,
+                config_file_list=cfg_files if cfg_files else None,
+                config_dict={"show_progress": False},
+            )
+            pretrain_dataset = create_dataset(pretrain_config)
+            pretrain_dataset.build()
+
         dataset.build()  # triggers _change_feat_format -> data_augmentation (saves _raw_inter_for_timeline)
+
+        if pretrain_dataset is not None:
+            _align_t2t_vocab_to_pretrain(dataset, pretrain_dataset, config)
+
         streaming_dl = create_streaming_timeline_dataloader(config, dataset)
         logger = getLogger()
         logger.info(

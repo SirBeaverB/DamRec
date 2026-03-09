@@ -23,6 +23,7 @@ except ImportError:
     _FLA_AVAILABLE = False
 
 DEBUG_T2T_STREAMING = False  # 设为 True 可开启算子/动量调试输出
+DEBUG_STATE_LOAD = True  # 设为 True 可排查 T2T 时状态是否加载进模型（仅打印前 20 次）
 
 
 class DamRec(SequentialRecommender):
@@ -142,6 +143,33 @@ class DamRec(SequentialRecommender):
 
     def forward_with_streaming(self, item_seq, item_seq_len, user_ids, update_state=True):
         """update_state=False: read-only for predict, avoids double-update in T2T."""
+        # uid 键一致性检查：仅首次 batch 打印一次
+        if DEBUG_STATE_LOAD and not getattr(DamRec, "_debug_uid_key_printed", False):
+            DamRec._debug_uid_key_printed = True
+            batch_size = item_seq.size(0)
+            if batch_size > 0 and len(self._streaming_state) > 0:
+                uid0 = user_ids[0].item()
+                keys_sample = list(self._streaming_state.keys())[:5]
+                hit = uid0 in self._streaming_state
+                lines = [
+                    "",
+                    "=" * 50,
+                    "[T2T uid 键检查] DamRec",
+                    "=" * 50,
+                    f"  batch uid0: value={uid0} type={type(uid0).__name__}",
+                    f"  state keys (前5): {keys_sample}",
+                    f"  state key types: {[type(k).__name__ for k in keys_sample]}",
+                    f"  uid0 in state: {hit}",
+                ]
+                if not hit and keys_sample:
+                    k0 = keys_sample[0]
+                    if isinstance(k0, int) and isinstance(uid0, int):
+                        lines.append(f"  (类型一致均为 int，若仍 miss 可能是 uid 空间不同)")
+                    else:
+                        lines.append(f"  类型不一致: uid0={type(uid0).__name__} vs key={type(k0).__name__}")
+                lines.append("=" * 50)
+                print("\n".join(lines))
+
         if DEBUG_T2T_STREAMING and not getattr(DamRec, "_t2t_debug_layer_printed", False):
             print(f"\n[DEBUG] DamRec Layer Type: {type(self.layers[0]).__name__}, FLA_AVAILABLE: {_FLA_AVAILABLE}, use_chunk_adam: {self.use_chunk_adam}\n")
             DamRec._t2t_debug_layer_printed = True
@@ -153,21 +181,23 @@ class DamRec(SequentialRecommender):
         device = item_seq_emb.device
         valid_mask = self._valid_mask(item_seq_emb)
 
-        seq_idx = torch.arange(seq_len, device=device).unsqueeze(0)
-        start_idx = []
+        update_mask = torch.zeros_like(item_seq_emb[:, :, 0], dtype=torch.bool)
         for i in range(batch_size):
-            uid = user_ids[i].item()
-            if uid in self._streaming_state:
-                state = self._streaming_state[uid]
-                start_idx.append(state[4])
+            valid_len = item_seq_len[i].item()
+            if valid_len == 0:
+                continue
+            if user_ids[i].item() in self._streaming_state:
+                update_mask[i, valid_len - 1] = True
             else:
-                start_idx.append(0)
-        start_idx_tensor = torch.tensor(start_idx, device=device, dtype=torch.long).unsqueeze(1)
-        inc_mask = seq_idx >= start_idx_tensor
-        update_mask = valid_mask & inc_mask
+                update_mask[i, :valid_len] = True
+        update_mask = update_mask & valid_mask
 
         S_batch_list, M_batch_list, V_batch_list = [], [], []
         step_batch_list = [] if self.use_chunk_adam else None
+        if DEBUG_STATE_LOAD:
+            if not hasattr(DamRec, "_debug_no_state_uids"):
+                DamRec._debug_no_state_uids = []
+                DamRec._debug_ok_state_list = []
         for layer_idx, layer in enumerate(self.layers):
             S_list, M_list, V_list = [], [], []
             step_list = [] if self.use_chunk_adam else None
@@ -178,6 +208,9 @@ class DamRec(SequentialRecommender):
                     S_list.append(state[0][layer_idx])
                     M_list.append(state[1][layer_idx])
                     V_list.append(state[2][layer_idx])
+                    if DEBUG_STATE_LOAD and layer_idx == 0 and len(DamRec._debug_ok_state_list) < 20:
+                        s0, m0 = state[0][0], state[1][0]
+                        DamRec._debug_ok_state_list.append((uid, s0.abs().sum().item(), m0.abs().sum().item()))
                     if self.use_chunk_adam and state[3] is not None:
                         step_list.append(state[3][layer_idx])
                     elif self.use_chunk_adam:
@@ -187,6 +220,8 @@ class DamRec(SequentialRecommender):
                     S_list.append(torch.zeros(self.num_heads, d_h, d_h, device=device))
                     M_list.append(torch.zeros(self.num_heads, d_h, d_h, device=device))
                     V_list.append(torch.zeros(self.num_heads, d_h, d_h, device=device))
+                    if DEBUG_STATE_LOAD and layer_idx == 0 and len(DamRec._debug_no_state_uids) < 20:
+                        DamRec._debug_no_state_uids.append(uid)
                     if self.use_chunk_adam:
                         step_list.append(torch.tensor(0.0, device=device, dtype=torch.float32))
             S_batch_list.append(torch.stack(S_list, dim=0))
@@ -222,26 +257,39 @@ class DamRec(SequentialRecommender):
         out = self.gather_indexes(x, last_idx)
         out = self.output_proj(out)
 
+        if DEBUG_STATE_LOAD and not getattr(DamRec, "_debug_state_printed", False):
+            no_uids = getattr(DamRec, "_debug_no_state_uids", [])
+            ok_list = getattr(DamRec, "_debug_ok_state_list", [])
+            if no_uids or ok_list:
+                DamRec._debug_state_printed = True
+                lines = ["", "=" * 50, "[T2T 状态排查] DamRec", "=" * 50]
+                if no_uids:
+                    lines.append(f"  NO STATE (前{len(no_uids)}): {no_uids}")
+                if ok_list:
+                    parts = [f"uid={u}:S={s:.3f} M={m:.3f}" for u, s, m in ok_list[:10]]
+                    lines.append(f"  FOUND (前{len(ok_list)}): " + " | ".join(parts) + (" ..." if len(ok_list) > 10 else ""))
+                lines.append("=" * 50)
+                print("\n".join(lines))
+
         if update_state:
             with torch.no_grad():
                 for i in range(batch_size):
                     uid = user_ids[i].item()
                     new_len = item_seq_len[i].item()
-                    if new_len > start_idx[i]:
-                        stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
-                        stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
-                        stored_V = tuple(v[i].detach().clone() for v in V_batch_list)
-                        if DEBUG_T2T_STREAMING:
-                            cnt = getattr(DamRec, "_t2t_debug_m_count", 0)
-                            if cnt < 50:
-                                m_mean = sum(m.abs().mean().item() for m in stored_M) / len(stored_M)
-                                print(f"[DEBUG] DamRec uid={uid} Step {new_len}, M_mean: {m_mean:.6f}")
-                                DamRec._t2t_debug_m_count = cnt + 1
-                        if self.use_chunk_adam:
-                            stored_step = tuple(st[i].detach().clone() for st in step_batch_list)
-                            self._streaming_state[uid] = (stored_S, stored_M, stored_V, stored_step, new_len, device)
-                        else:
-                            self._streaming_state[uid] = (stored_S, stored_M, stored_V, None, new_len, device)
+                    stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
+                    stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
+                    stored_V = tuple(v[i].detach().clone() for v in V_batch_list)
+                    if DEBUG_T2T_STREAMING:
+                        cnt = getattr(DamRec, "_t2t_debug_m_count", 0)
+                        if cnt < 50:
+                            m_mean = sum(m.abs().mean().item() for m in stored_M) / len(stored_M)
+                            print(f"[DEBUG] DamRec uid={uid} Step {new_len}, M_mean: {m_mean:.6f}")
+                            DamRec._t2t_debug_m_count = cnt + 1
+                    if self.use_chunk_adam:
+                        stored_step = tuple(st[i].detach().clone() for st in step_batch_list)
+                        self._streaming_state[uid] = (stored_S, stored_M, stored_V, stored_step, new_len, device)
+                    else:
+                        self._streaming_state[uid] = (stored_S, stored_M, stored_V, None, new_len, device)
 
         return out
 

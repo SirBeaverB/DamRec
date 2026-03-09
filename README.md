@@ -11,7 +11,7 @@ Gated Delta Networks (GDN) 本质上是一个用 SGD（随机梯度下降）做�
 DamRec 的核心创新灵感来源于序列建模与最优化理论之间深层的数学等效性。应用于流式推荐系统的线性 Transformer（如GDN）中的自回归状态更新机制，其前向传播过程在本质上可以被解构并等效为一种隐式的模型参数更新步骤。基于这一深刻的联系，DamRec尝试突破原模型基础逻辑的局限，将更高级、收敛性更强的一阶梯度下降算法的数学推导，“等价翻译”并直接融合到线性 Transformer 的算子内部，从而在保持流式推荐所需的高效推理速度的同时，从底层架构上赋予了模型在面对实时非平稳数据流时更卓越的在线学习与记忆演化能力。
 
 
-可能还需要使用chunk的思想，单数据更新使用一般RNN，填满一个chunk再开始用dam
+还需要使用chunk的思想，单数据更新使用一般RNN，填满一个chunk再开始用dam
 
 
 
@@ -43,66 +43,119 @@ DamRec 的核心创新灵感来源于序列建模与最优化理论之间深层�
 直接训练t2t显然效果不行，应该先预训练。已实现
 需要先进行预训练，然后再测试为了效率，可以先用1M的前80%数据进行预训练，后面的用于t2t测试
 - 写代码 ✅
-- 测试（用GDN预训练，然后换不同的几个模型）
+- 测试（用GDN预训练，然后换不同的几个模型）✅ 词表对齐 + 用户状态导出已实现
 - baseline应该怎么测？谁做预训练谁做t2t?应该不能嫁接
 
 ---
 ## 快速测试
 
+### 一、非流式实验（标准训练）
+
+**五模型同时测试**（GDN、MoRec、NestRec、DamRec、FroRec）：
+
+| 命令 | 说明 |
+|------|------|
+| `python scripts/run_non_streaming_experiments_100k.py` | ml-100k，L=50，五模型 |
+| `python scripts/run_non_streaming_experiments_1m.py` | ml-1m，L=128，五模型 |
+| `python scripts/run_non_streaming_experiments_1m.py -L 64` | ml-1m，L=64，五模型 |
+| `python scripts/run_non_streaming_experiments_1m.py -L 64 --saved` | 同上，并保存 checkpoint |
+| `python scripts/run_baseline_experiments_1m.py` | SASRec、LinRec、GRU4Rec、LightSANs（与 non_streaming 同配置） |
+
+---
+
+### 二、T2T 流式实验（80/20 划分，推荐）
+
+**数据划分**：ml-1m 按时间戳前 80% 预训练、后 20% 流式测试。脚本自动完成词表对齐、用户状态导出、预训练历史注入。
+
+**最简路径**：
+- 有 ckp 且已有 `user_states.pt`：`python scripts/run_t2t_from_ckp_unified.py --ckp <ckp目录> -L 64`
+- 有 ckp 但无 `user_states.pt`：`python scripts/run_t2t_from_ckp_unified.py --ckp <ckp目录> --dump_state -L 64`（先导出再跑五模型）
+
+#### 场景 A：从零开始（首次运行）
+
 ```bash
-# 非流式
-# ml-100k: L=50, epochs=100
-python scripts/run_non_streaming_experiments_100k.py
+# Step 1：准备 80/20 划分数据（只需执行一次）
+python scripts/prepare_ml1m_80_20_split.py
 
-# ml-1m: L=128(默认), epochs=150
-python scripts/run_non_streaming_experiments_1m.py
+# Step 2：预训练 + 状态导出 + T2T，一气呵成
+python scripts/run_pretrain_t2t_1m.py --mode full
+```
+输出：`saved/pretrain_t2t_1m/` 下 GDN/MoRec/NestRec/DamRec/FroRec 的 checkpoint 和 `user_states.pt`，以及 `experiment_results/pretrain_t2t_1m_*.txt`。
 
-# ml-1m: L=64
-python scripts/run_non_streaming_experiments_1m.py --max_seq_len 64
+#### 场景 B：已有 checkpoint，直接跑 T2T
 
-# Baseline 实验（SASRec、LinRec、GRU4Rec、LightSANs，与 non_streaming_1m 同配置）
-python scripts/run_baseline_experiments_1m.py
-python scripts/run_baseline_experiments_1m.py -L 64 --saved
+```bash
+# 指定 checkpoint 目录或 .pth 文件，自动词表对齐、自动加载 user_states.pt（若存在）
+python scripts/run_t2t_from_ckp_unified.py --ckp saved/gdn_pretrain_t2t_unified_L64 -L 64
+```
+输出：五模型 T2T 表格 → `experiment_results/t2t_from_ckp_L64_t2t_*.txt`
 
-# T2T 流式（与 non_streaming 同格式表格）
-# ml-100k: L=50
-python scripts/run_streaming_t2t_experiments_100k.py
+#### 场景 C：已有 ckp、无 user_states，一次性跑五模型（含嫁接）
 
-# ml-1m: L=128
-python scripts/run_streaming_t2t_experiments_1m.py
+**推荐**：一条命令完成状态导出 + 五模型 T2T（GDN 同模型加载 user_states；MoRec/NestRec/DamRec/FroRec 嫁接，M/V 从 0 吸收流式）。
 
-# 预训练(80%) + T2T(20%) 实验（推荐先预训练再 T2T）
-python scripts/prepare_ml1m_80_20_split.py   # 首次运行需准备数据
-python scripts/run_pretrain_t2t_1m.py --mode pretrain
+```bash
+python scripts/run_t2t_from_ckp_unified.py --ckp saved/gdn_pretrain_t2t_unified_L64 --dump_state -L 64
+```
+- `--dump_state`：若目录下无 `user_states.pt` 则先导出，再依次跑 GDN、MoRec、NestRec、DamRec、FroRec
+- 输出：`experiment_results/t2t_from_ckp_L64_t2t_*.txt`（五模型表格）
+
+#### 场景 D：单模型 T2T（含嫁接）
+
+```bash
+# 同模型
 python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/pretrain_t2t_1m/GDN-xxx.pth
-# 或从 experiment 已有 checkpoint 直接 T2T
-python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/non_streaming_1m_L128/GDN-xxx.pth
-# 嫁接：用 GDN 离线权重热启动任意变体做 T2T（strict=False）
-python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model DamRec
-python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model MoRec
-python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model NestRec
-python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model FroRec
 
-# 统一脚本：GDN 预训练一次，五模型各跑 T2T，输出 non_streaming 风格表格
-python scripts/run_gdn_pretrain_t2t_unified.py
-python scripts/run_gdn_pretrain_t2t_unified.py --ckp saved/GDN-xxx.pth   # 跳过预训练
-python scripts/run_gdn_pretrain_t2t_unified.py -L 64                     # L=64
+# 嫁接：用 GDN 权重热启动 DamRec
+python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model DamRec
 ```
 
-### GDN 嫁接（Grafting）说明
-GDN 与 MoRec、NestRec、DamRec、FroRec 共享大部分参数（item_embedding、q/k/v_proj、q/k/v_conv、gamma_gate、out_gate、ffn_*、output_proj），可用 `strict=False` 将 GDN 的离线权重嫁接至任意变体做 T2T 热启动：
+#### 场景 E：Zero-Shot 体检（仅评估，不训练）
 
-| 目标模型 | 兼容性 | 说明 |
-|----------|--------|------|
-| **MoRec** | ✓ | Token 级无 beta_gate（忽略 GDN 的 beta_gate）；Chunk 级完全匹配。M 从 0 吸收流式。 |
-| **NestRec** | ✓ | 完全匹配（含 beta_gate）。M 从 0 吸收流式。 |
-| **DamRec** | ✓ | Token 级无 beta_gate；Chunk 级完全匹配。M/V 从 0 吸收流式。 |
-| **FroRec** | ✓ | 完全匹配（Chunk 级）。M/V 从 0 吸收流式。 |
-| **GDN** | ✓ | 同模型直接加载，无需 strict=False。 |
+```bash
+# 用于排查预训练权重是否加载成功
+python scripts/run_t2t_from_ckp_unified.py --ckp saved/gdn_pretrain_t2t_unified_L64 --zero_shot -L 64
+```
 
-用法：`--ckp saved/GDN-xxx.pth --model <MoRec|NestRec|DamRec|FroRec>`
+#### 场景 F：GDN 预训练 + 五模型 T2T 表格（一步到位）
 
-**流式学习率**：预训练 lr=0.001 往往不等于流式微调的最佳 lr。T2T 阶段数据逐条来，易被噪声带偏，脚本默认将流式 lr 降为 0.0001（10 倍）。若发现热启动后指标轻微崩塌，可尝试 `--t2t_lr 0.00005` 或更小；若收敛过慢可尝试 `--t2t_lr 0.0002`。
+```bash
+python scripts/run_gdn_pretrain_t2t_unified.py
+# 或跳过预训练，用已有 ckp
+python scripts/run_gdn_pretrain_t2t_unified.py --ckp saved/GDN-xxx.pth
+# 指定 L=64
+python scripts/run_gdn_pretrain_t2t_unified.py -L 64
+```
+
+---
+
+### 三、全量 ml-1m 流式（非 80/20，用于对比）
+
+```bash
+python scripts/run_streaming_t2t_experiments_1m.py
+```
+
+### T2T 机制说明（自动完成，无需手动）
+
+| 机制 | 作用 |
+|------|------|
+| **词表对齐** | RecBole 按首次出现分配 ID，pretrain/t2t 会错位。脚本自动用预训练词表覆盖 T2T。 |
+| **用户状态库** | 导出 `user_states.pt`（S, M, V），T2T 时加载，老用户不再从零开始。`--mode full` 默认导出；`--dump_state` 从已有 ckp 导出。 |
+| **预训练历史** | 用前 80% 的 item 序列初始化 user_history，避免 T2T 仅含 20% 导致序列过短。 |
+
+### 常用参数
+
+| 参数 | 说明 |
+|------|------|
+| `-L` / `--max_seq_len` | 序列长度，如 `-L 64` |
+| `--dump_state` | 先导出 user_states.pt 再 T2T（若已存在则跳过） |
+| `--zero_shot` | 仅评估不训练，排查预训练权重是否加载成功 |
+| `--model` | 嫁接时指定目标模型，如 `--model DamRec` |
+| `--t2t_lr` | 流式学习率，默认 0.0001 |
+
+### GDN 嫁接
+
+用 GDN 权重热启动 MoRec/NestRec/DamRec/FroRec：`--ckp saved/GDN-xxx.pth --model DamRec`。嫁接时 M/V 从 0 吸收流式，不加载 user_states.pt。
 
 ### 非流式 L / Chunk 配置说明
 - **L (MAX_ITEM_LIST_LENGTH)**：序列长度，默认 50。ml-100k 用 50 即可；**ml-1m 用户历史更长，建议 L=128**。`run_non_streaming_experiments` 在 ml-1m 下已自动设为 128。
@@ -120,21 +173,8 @@ python scripts/run_comprehensive_experiments.py --max_seq_len 128
 ```
 
 ### T2T 流式实验脚本 (Step 4)
-批量运行 5 个模型，输出与 non_streaming 相同格式的表格（valid/test recall@10、time、显存）：
-```bash
-# ml-100k: L=50
-python scripts/run_streaming_t2t_experiments_100k.py
-
-# ml-1m: L=128
-python scripts/run_streaming_t2t_experiments_1m.py
-```
-
-通用脚本（支持 --dataset、--model 参数）：
-```bash
-python scripts/run_streaming_t2t_experiments.py
-python scripts/run_streaming_t2t_experiments.py --dataset ml-100k
-python scripts/run_streaming_t2t_experiments.py --model GDN
-```
+- **80/20 划分**（推荐）：见上方「二、T2T 流式实验」
+- **全量数据集**：`python scripts/run_streaming_t2t_experiments_100k.py`（ml-100k）、`python scripts/run_streaming_t2t_experiments_1m.py`（ml-1m）
 
 ### 输出文件命名
 结果保存在 `experiment_results/` 下，按脚本区分：
@@ -148,6 +188,8 @@ python scripts/run_streaming_t2t_experiments.py --model GDN
 | run_streaming_t2t_experiments.py | `streaming_t2t_{dataset}_{timestamp}.txt` |
 | pretrain_t2t_1m | `pretrain_t2t_1m_{timestamp}.txt`（80% 预训练 + 20% T2T） |
 | gdn_pretrain_t2t_unified | `gdn_pretrain_t2t_unified_{timestamp}.txt` / `.csv`（GDN 预训练 + 五模型 T2T 表格） |
+| t2t_from_ckp_unified | `t2t_from_ckp_L{L}_t2t_{timestamp}.txt` / `.csv`（五模型 T2T） |
+| t2t_from_ckp_unified (zero_shot) | `t2t_from_ckp_L{L}_zero_shot_{timestamp}.txt` / `.csv`（仅评估不训练） |
 
 ---
 
@@ -285,42 +327,24 @@ python scripts/verify_eval_setup.py --dataset=ml-1m --config_files="recbole/prop
 - **Test-Then-Train**：若该交互为 test 点 → 先预测并记录 NDCG/Recall → 再算 loss 更新模型 → 最后更新该用户的 S
 - **无限长程记忆**：S 伴随用户生命周期演化，不随 epoch 重置
 
-### 运行
-公共配置：`recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml`（所有模型共用）
+### 推荐：80/20 划分（ml-1m）
+**首选**：使用 `run_pretrain_t2t_1m.py` 或 `run_t2t_from_ckp_unified.py`，自动完成词表对齐、用户状态导出、预训练历史注入。见上方「快速测试」T2T 部分。
 
-**ml-100k（快速验证）**
+### 全量数据集（run_recbole.py）
+公共配置：`recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml`
+
 ```bash
+# ml-100k
 python run_recbole.py --model=GDN --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=MoRec --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=NestRec --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=DamRec --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=FroRec --dataset=ml-100k --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-```
 
-**ml-1m**
-```bash
+# ml-1m
 python run_recbole.py --model=GDN --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=MoRec --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=NestRec --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=DamRec --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=FroRec --dataset=ml-1m --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
 ```
-
-**ml-10m（默认，约 1000 万交互）**
-```bash
-python run_recbole.py --model=GDN --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=MoRec --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=NestRec --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=DamRec --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-python run_recbole.py --model=FroRec --config_files=recbole/properties/quick_start_config/streaming/sequential_GDN_streaming_t2t.yaml
-```
-注：未指定 `--dataset` 时使用配置内默认 `ml-10m`。FroRec 需 FLA+CUDA。
 
 ### 配置要点
 - `streaming_t2t: True`：启用 T2T 模式
 - `streaming_test_ratio: 0.1`：每用户最后 10% 交互作为 test 点
 - `epochs: 1`：单次遍历时间轴，无多 epoch
-- `enable_amp: False`：避免 Triton 编译问题（可按需开启）
 
 ### 与普通流式的区别
 | 模式 | 数据顺序 | 评估时机 | S 重置 |

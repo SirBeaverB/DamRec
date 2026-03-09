@@ -21,8 +21,12 @@
   # 嫁接：用 GDN 的离线权重热启动任意变体（MoRec/NestRec/DamRec/FroRec），M/V 从 0 吸收流式
   python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model DamRec
 
-  # 4. 完整流程：预训练后自动 T2T
+  # 4. 完整流程：预训练后自动 T2T（默认导出 user_states.pt，工业标准）
   python scripts/run_pretrain_t2t_1m.py --mode full
+  python scripts/run_pretrain_t2t_1m.py --mode full --no_dump_state  # 禁用状态导出
+
+  # 5. 状态导出：从已有 checkpoint 导出用户状态库 (Redis 模拟)
+  python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/gdn.pth --dump_state
 """
 
 import argparse
@@ -31,6 +35,9 @@ import os
 import sys
 import time
 from datetime import datetime
+
+import numpy as np
+from tqdm import tqdm
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_script_dir))
@@ -59,11 +66,13 @@ PRETRAIN_OVERRIDES = {
 }
 
 # 流式阶段 lr 建议比预训练低 5~10 倍：数据逐条来，易被噪声带偏，步子迈小更稳
+# streaming_pretrain_dataset: 用预训练集历史初始化 user_history，否则 T2T 仅含 20% 数据，序列过短 recall 异常低
 T2T_OVERRIDES = {
     "dataset": "ml-1m-t2t",
     "streaming_t2t": True,
-    "streaming_mode": True,
+    "streaming_mode": True,  # 已修复滑动窗口死锁：有老状态时只吸收最后 1 token，无状态时吸收全量
     "streaming_test_ratio": 0.1,
+    "streaming_pretrain_dataset": "ml-1m-pretrain",
     "MAX_ITEM_LIST_LENGTH": 128,
     "epochs": 1,
     "worker": 4,
@@ -120,7 +129,120 @@ def run_pretrain(model_name, config_file, ckp_dir, show_progress=True, max_seq_l
     return trainer.saved_model_file
 
 
-def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, max_seq_len=None):
+def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, max_seq_len=None, show_progress=True):
+    """工业标准：导出预训练结束时的用户状态 (S, M, V) 到 user_states_{model_name}.pt。
+    直接按 (user_id, timestamp) 排序遍历底层数据，保证全员覆盖、绝对时序，避免 DataLoader 乱序/漏人。
+    """
+    import pandas as pd
+
+    _ensure_split()
+    checkpoint = torch.load(ckp_path, map_location="cpu", weights_only=False)
+    ckp_model = checkpoint["config"]["model"]
+    model_name = model_name or ckp_model
+
+    if config_file is None:
+        for k, (m, cf) in MODEL_CONFIGS.items():
+            if m == model_name:
+                config_file = cf
+                break
+        if config_file is None:
+            config_file = f"recbole/properties/quick_start_config/sequential_{model_name}.yaml"
+
+    proj = os.path.dirname(os.path.dirname(__file__))
+    ckp_dir = os.path.dirname(ckp_path) if os.path.isfile(ckp_path) else ckp_path
+    save_path = save_path or os.path.join(ckp_dir, f"user_states_{model_name}.pt")
+
+    overrides = {
+        "dataset": "ml-1m-pretrain",
+        "streaming_t2t": False,  # 避免 StreamingSequentialDataset，直接用底层 DataFrame
+        "streaming_mode": True,  # 模型用 forward_with_streaming 吸收历史
+        "MAX_ITEM_LIST_LENGTH": max_seq_len or 128,
+        "show_progress": show_progress,
+    }
+    config = Config(
+        model=model_name,
+        dataset="ml-1m-pretrain",
+        config_file_list=[config_file],
+        config_dict={"show_progress": show_progress, **overrides},
+    )
+    init_seed(config["seed"], config["reproducibility"])
+    init_logger(config)
+
+    from logging import getLogger
+    logger = getLogger()
+    logger.info(set_color("[State Dump]: ", "pink") + f"导出用户状态，ckp={ckp_path} -> {save_path}")
+
+    dataset_obj = create_dataset(config)
+    # 不调用 build/data_preparation，直接访问底层 DataFrame，保证时序与全员覆盖
+    inter_feat = dataset_obj.inter_feat
+    if hasattr(inter_feat, "interaction"):
+        df = pd.DataFrame({k: (v.cpu().numpy() if torch.is_tensor(v) else np.asarray(v)).flatten()
+                           for k, v in inter_feat.interaction.items()})
+    else:
+        df = inter_feat
+
+    uid_field = dataset_obj.uid_field
+    iid_field = dataset_obj.iid_field
+    time_field = config.final_config_dict.get("TIME_FIELD", "timestamp")
+    if time_field not in df.columns:
+        time_field = next((c for c in df.columns if "time" in c.lower()), df.columns[-1])
+
+    df = df.sort_values(by=[uid_field, time_field])
+    user_tensor = torch.tensor(df[uid_field].values, dtype=torch.long)
+    item_tensor = torch.tensor(df[iid_field].values, dtype=torch.long)
+    all_users = torch.unique(user_tensor)
+    max_len = max_seq_len or config["MAX_ITEM_LIST_LENGTH"]
+    device = config["device"]
+
+    model = get_model(config["model"])(config, dataset_obj).to(config["device"])
+    if model_name != ckp_model:
+        model.load_state_dict(checkpoint["state_dict"], strict=False)
+        logger.info(f"嫁接加载: {ckp_model} -> {model_name} (strict=False)")
+    else:
+        model.load_state_dict(checkpoint["state_dict"])
+    if "other_parameter" in checkpoint and checkpoint["other_parameter"]:
+        model.load_other_parameter(checkpoint["other_parameter"])
+
+    model.eval()
+    model._streaming_state = {}
+
+    n_skip = sum(1 for u in all_users if u.item() == 0)
+    logger.info(set_color("[State Dump]: ", "yellow") + f"按绝对时序为 {len(all_users)-n_skip} 用户灌注历史状态...")
+
+    with torch.no_grad():
+        for uid in tqdm(all_users, desc="State Dump", disable=not show_progress):
+            uid_scalar = uid.item()
+            if uid_scalar == 0:
+                continue
+            mask = (user_tensor == uid_scalar)
+            user_history = item_tensor[mask]
+            hist_len = len(user_history)
+            if hist_len == 0:
+                continue
+            if hist_len > max_len:
+                user_history = user_history[-max_len:]
+                seq_len = max_len
+            else:
+                seq_len = hist_len
+
+            batch_item_seq = torch.zeros((1, max_len), dtype=torch.long, device=device)
+            batch_item_seq[0, :seq_len] = user_history.to(device)
+            batch_item_seq_len = torch.tensor([seq_len], dtype=torch.long, device=device)
+            batch_user_id = torch.tensor([uid_scalar], dtype=torch.long, device=device)
+
+            _ = model.forward_with_streaming(batch_item_seq, batch_item_seq_len, batch_user_id, update_state=True)
+
+    torch.save(model._streaming_state, save_path)
+    n_stored = len(model._streaming_state)
+    logger.info(set_color("[State Dump]: ", "green") + f"已导出 {n_stored} 用户状态 -> {save_path}")
+    if n_stored >= 5500:
+        logger.info(set_color("[State Dump]: ", "green") + "状态库完整 (>=5500 用户)")
+    else:
+        logger.warning(set_color("[State Dump]: ", "red") + f"状态库残缺！仅 {n_stored} 用户，预期 ~6040")
+    return save_path
+
+
+def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, max_seq_len=None, zero_shot=False, user_states_path=None):
     """从 checkpoint 加载，在 ml-1m-t2t 上运行 T2T。
     t2t_model: 若指定且与 checkpoint 中的 model 不同，则用 strict=False 做「嫁接」：
        用 GDN 的离线权重热启动 MoRec/NestRec/DamRec/FroRec，M/V 从 0 吸收流式数据。
@@ -156,10 +278,14 @@ def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, 
         overrides["learning_rate"] = t2t_lr
     if max_seq_len is not None:
         overrides["MAX_ITEM_LIST_LENGTH"] = max_seq_len
+    if zero_shot:
+        overrides["streaming_zero_shot"] = True
+        overrides["learning_rate"] = 0.0
     config_dict = {
         "show_progress": show_progress,
         "gpu_id": "0",
         "checkpoint_dir": ckp_dir,
+        "config_file_list": [config_file],  # 供 data_preparation 词表对齐时构建 pretrain config
         **overrides,
     }
     config = Config(
@@ -197,6 +323,14 @@ def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, 
             model.load_other_parameter(checkpoint["other_parameter"])
         logger.info(set_color("Loaded checkpoint from", "green") + f" {ckp_path}")
 
+    # 工业标准：注入用户状态库 (Redis 模拟)，老用户不再从零开始
+    # 专属状态库：user_states_{model_name}.pt，嫁接模型也有对应 state 文件时加载
+    ckp_dir = os.path.dirname(ckp_path) if os.path.isfile(ckp_path) else ckp_path
+    states_file = user_states_path or os.path.join(ckp_dir, f"user_states_{model_name}.pt")
+    if os.path.isfile(states_file) and hasattr(model, "_streaming_state"):
+        model._streaming_state = torch.load(states_file, map_location=config["device"], weights_only=False)
+        logger.info(set_color("Loaded user states from", "green") + f" {states_file} ({len(model._streaming_state)} users)")
+
     peak_mem_gb = None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -230,6 +364,12 @@ def main():
                         help="t2t 流式阶段学习率，默认 0.0001(比预训练 0.001 低 10 倍抗噪)；可调")
     parser.add_argument("--max_seq_len", "-L", type=int, default=None,
                         help="序列长度 L，默认 128")
+    parser.add_argument("--zero_shot", action="store_true",
+                        help="Zero-Shot 体检：仅评估不训练，排查预训练权重是否加载成功")
+    parser.add_argument("--dump_state", action="store_true",
+                        help="full 模式：预训练后导出 user_states.pt，T2T 时注入 (工业标准)")
+    parser.add_argument("--no_dump_state", action="store_true",
+                        help="禁用状态导出 (与 --dump_state 二选一)")
     parser.add_argument("--no_progress", action="store_true")
     args = parser.parse_args()
 
@@ -256,11 +396,19 @@ def main():
         if not os.path.isfile(ckp_path):
             print(f"checkpoint 不存在: {ckp_path}")
             sys.exit(1)
+        if args.dump_state:
+            model_name = MODEL_CONFIGS.get(args.model, (args.model, None))[0] if args.model else torch.load(ckp_path, map_location="cpu", weights_only=False)["config"]["model"]
+            ckp_dir = os.path.dirname(ckp_path)
+            states_file = os.path.join(ckp_dir, f"user_states_{model_name}.pt")
+            if not os.path.isfile(states_file):
+                print(f"\n[State Dump] {model_name} 导出用户状态 -> {states_file}")
+                run_state_dump(ckp_path, save_path=None, model_name=model_name, max_seq_len=args.max_seq_len, show_progress=show_progress)
         result, t_sec, mem = run_t2t_from_ckp(
             ckp_path, show_progress=show_progress, t2t_model=args.model, t2t_lr=args.t2t_lr,
-            max_seq_len=args.max_seq_len,
+            max_seq_len=args.max_seq_len, zero_shot=args.zero_shot,
         )
-        print(f"\nT2T 完成: {result}, 耗时 {t_sec:.1f}s, 显存 {mem:.2f}GB" if mem else f"\nT2T 完成: {result}, 耗时 {t_sec:.1f}s")
+        mode_str = "Zero-Shot 体检" if args.zero_shot else "T2T"
+        print(f"\n{mode_str} 完成: {result}, 耗时 {t_sec:.1f}s, 显存 {mem:.2f}GB" if mem else f"\n{mode_str} 完成: {result}, 耗时 {t_sec:.1f}s")
         return
 
     if args.mode in ["pretrain", "full"]:
@@ -289,7 +437,7 @@ def main():
             print(f"\n预训练完成，checkpoint 在 {ckp_dir}")
             return
 
-        # full: 对每个预训练好的模型做 T2T
+        # full: 状态导出 + T2T
         output_dir = os.path.join(proj, "experiment_results")
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -299,10 +447,22 @@ def main():
         for model_key, ckp_file in saved_ckps.items():
             if not os.path.isfile(ckp_file):
                 continue
+            # 工业标准：导出用户状态库 (user_states.pt)，T2T 时自动加载 (full 模式默认开启)
+            do_dump = (args.dump_state or (not args.no_dump_state)) and args.mode == "full"
+            if do_dump:
+                print(f"\n{'='*60}\nState Dump {model_key} ...\n{'='*60}")
+                try:
+                    run_state_dump(ckp_file, model_name=MODEL_CONFIGS[model_key][0],
+                                  config_file=MODEL_CONFIGS[model_key][1], max_seq_len=args.max_seq_len,
+                                  show_progress=show_progress)
+                except Exception as e:
+                    print(f"[WARN] {model_key} 状态导出失败: {e}")
+
             print(f"\n{'='*60}\nT2T {model_key} ...\n{'='*60}")
             try:
                 result, t_sec, mem = run_t2t_from_ckp(
-                    ckp_file, show_progress=show_progress, t2t_lr=args.t2t_lr, max_seq_len=args.max_seq_len
+                    ckp_file, show_progress=show_progress, t2t_lr=args.t2t_lr, max_seq_len=args.max_seq_len,
+                    zero_shot=args.zero_shot,
                 )
                 r10 = result.get("recall@10", "N/A")
                 lines.append(f"{model_key}\trecall@10={r10}\ttime={t_sec:.1f}s\tmem={mem:.2f}GB" if mem else f"{model_key}\trecall@10={r10}\ttime={t_sec:.1f}s")

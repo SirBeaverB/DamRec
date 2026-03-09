@@ -1,3 +1,7 @@
+# 序列模型需 timestamp 做 TO 排序，覆盖 sample 的 load_col 以加载之
+load_col:
+  inter: [user_id, item_id, rating, timestamp]
+
 eval_args:
   split: {'LS': 'valid_and_test'}
   order: TO

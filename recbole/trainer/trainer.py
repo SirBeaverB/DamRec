@@ -899,7 +899,11 @@ class StreamingTestThenTrainTrainer(Trainer):
 
     def __init__(self, config, model):
         super().__init__(config, model)
-        self.logger.info("[StreamingT2T] Test-Then-Train, no reset_streaming_state")
+        self.streaming_zero_shot = config.final_config_dict.get("streaming_zero_shot", False)
+        if self.streaming_zero_shot:
+            self.logger.info("[StreamingT2T] Zero-Shot 体检: 仅评估不训练 (lr=0, 无反向传播)")
+        else:
+            self.logger.info("[StreamingT2T] Test-Then-Train, no reset_streaming_state")
 
     def fit(
         self,
@@ -963,18 +967,19 @@ class StreamingTestThenTrainTrainer(Trainer):
                             )
                     self.model.train()
 
-            self.optimizer.zero_grad()
-            with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
-                loss = loss_func(interaction)
-            if isinstance(loss, tuple):
-                loss = sum(loss)
-            self._check_nan(loss)
-            total_loss += loss.item()
-            scaler.scale(loss).backward()
-            if self.clip_grad_norm:
-                clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
-            scaler.step(self.optimizer)
-            scaler.update()
+            if not self.streaming_zero_shot:
+                self.optimizer.zero_grad()
+                with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
+                    loss = loss_func(interaction)
+                if isinstance(loss, tuple):
+                    loss = sum(loss)
+                self._check_nan(loss)
+                total_loss += loss.item()
+                scaler.scale(loss).backward()
+                if self.clip_grad_norm:
+                    clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
+                scaler.step(self.optimizer)
+                scaler.update()
 
         self.train_loss_dict[0] = total_loss
         self.eval_collector.model_collect(self.model)

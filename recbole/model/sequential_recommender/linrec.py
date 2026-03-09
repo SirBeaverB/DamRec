@@ -46,7 +46,9 @@ class LinRec(SequentialRecommender):
         self.layer_norm_eps = config["layer_norm_eps"]
         self.initializer_range = config["initializer_range"]
         self.loss_type = config["loss_type"]
-        self.streaming_mode = config.get("streaming_mode", False)
+        self.streaming_mode = (
+            config["streaming_mode"] if config["streaming_mode"] is not None else False
+        )
 
         self.item_embedding = nn.Embedding(
             self.n_items, self.hidden_size, padding_idx=0
