@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 # DamRec: Delta-Adam Memory for Streaming Recommendation
 #
-# SGD → Adam: 将 GDN 等价于 SGD 的状态更新升级为 Adam 等价
-# - Token 级: m=β1*m+(1-β1)*δ; v=β2*v+(1-β2)*δ²; S += γ*m/(√v+ε)
-# - Chunk 级: FLA + 宏观 Adam 更新，可复用 FLA 加速
+# 实现与 instruct.md 一致：α/β 门控、秩一 V_r/V_k、预条件 P、stop-gradient 二阶矩；
+# Token 级 §5–6；Chunk 级 §7（固定 P 块内 + 块边界 (38)(39)）。
 
 import torch
 from torch import nn
@@ -11,28 +10,17 @@ from torch.nn.init import xavier_normal_
 
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.layers import (
-    GatedDeltaLayerAdam,
-    GatedDeltaLayerChunkAdam,
+    GatedDeltaLayerDamRec,
+    GatedDeltaLayerChunkDamRec,
 )
 from recbole.model.loss import BPRLoss
-
-try:
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-    _FLA_AVAILABLE = True
-except ImportError:
-    _FLA_AVAILABLE = False
 
 DEBUG_T2T_STREAMING = False  # 设为 True 可开启算子/动量调试输出
 DEBUG_STATE_LOAD = True  # 设为 True 可排查 T2T 时状态是否加载进模型（仅打印前 20 次）
 
 
 class DamRec(SequentialRecommender):
-    r"""DamRec: Delta-Adam Memory for Streaming Recommendation.
-
-    Adam 等价更新:
-    - Token 级: m=β1*m+(1-β1)*δ; v=β2*v+(1-β2)*δ²; S += γ*m/(√v+ε)
-    - Chunk 级 (use_chunk_adam): FLA + 宏观 Adam
-    """
+    r"""DamRec: 与 instruct.md 一致的预条件门控 Delta 递归。"""
 
     def __init__(self, config, dataset):
         super(DamRec, self).__init__(config, dataset)
@@ -47,31 +35,36 @@ class DamRec(SequentialRecommender):
         self.num_heads = config["num_heads"] if config["num_heads"] is not None else 4
         self.conv_kernel_size = config["conv_kernel_size"] if config["conv_kernel_size"] is not None else 3
         self.ffn_ratio = config["ffn_ratio"] if config["ffn_ratio"] is not None else 4
-        self.adam_beta1 = config["adam_beta1"] if config["adam_beta1"] is not None else 0.9
-        self.adam_beta2 = config["adam_beta2"] if config["adam_beta2"] is not None else 0.999
-        self.adam_eps = config["adam_eps"] if config["adam_eps"] is not None else 1e-8
-        self.adam_eta = config["adam_eta"] if config["adam_eta"] is not None else 0.1
+        # RecBole Config 无 .get()；config["k"] 等价 final_config_dict.get(k)（缺省为 None）
+        self.damrec_rho = config["damrec_rho"] if config["damrec_rho"] is not None else 0.99
+        _eps = config["damrec_eps"]
+        if _eps is None:
+            _eps = config["adam_eps"] if config["adam_eps"] is not None else 1e-8
+        self.damrec_eps = _eps
+        self.damrec_chunk_size = config["damrec_chunk_size"] if config["damrec_chunk_size"] is not None else 16
+        _cuf = config["damrec_chunk_use_fla"]
+        self.damrec_chunk_use_fla = _cuf if _cuf is not None else True
         use_chunk = config["use_chunk_adam"] if config["use_chunk_adam"] is not None else False
-        self.use_chunk_adam = use_chunk and _FLA_AVAILABLE
+        self.use_chunk_adam = use_chunk
 
         self.item_embedding = nn.Embedding(
             self.n_items, self.embedding_size, padding_idx=0
         )
         self.emb_dropout = nn.Dropout(self.dropout_prob)
 
-        layer_cls = GatedDeltaLayerChunkAdam if self.use_chunk_adam else GatedDeltaLayerAdam
+        layer_cls = GatedDeltaLayerChunkDamRec if self.use_chunk_adam else GatedDeltaLayerDamRec
         layer_kw = dict(
             d_model=self.embedding_size,
             num_heads=self.num_heads,
             conv_kernel_size=self.conv_kernel_size,
             ffn_ratio=self.ffn_ratio,
             dropout=self.dropout_prob,
-            adam_beta1=self.adam_beta1,
-            adam_beta2=self.adam_beta2,
-            adam_eps=self.adam_eps,
+            damrec_rho=self.damrec_rho,
+            damrec_eps=self.damrec_eps,
         )
         if self.use_chunk_adam:
-            layer_kw["adam_eta"] = self.adam_eta
+            layer_kw["damrec_chunk_size"] = self.damrec_chunk_size
+            layer_kw["use_fla_intrachunk"] = self.damrec_chunk_use_fla
 
         self.layers = nn.ModuleList([layer_cls(**layer_kw) for _ in range(self.n_layers)])
         self.output_proj = nn.Linear(self.embedding_size, self.embedding_size)
@@ -84,15 +77,24 @@ class DamRec(SequentialRecommender):
             raise NotImplementedError("loss_type must be in ['BPR', 'CE']")
 
         self.apply(self._init_weights)
+        # _init_weights 将 Linear.bias 置零，会覆盖层内对 alpha_gate 的常数偏置
+        for layer in self.layers:
+            nn.init.constant_(layer.alpha_gate.bias, 1.0)
         self._streaming_state = {}
 
         if self.streaming_mode:
-            mode = "chunk-level (FLA)" if self.use_chunk_adam else "token-level"
+            mode = "chunk (instruct §7)" if self.use_chunk_adam else "token (instruct §5–6)"
+            fla_h = ""
+            if self.use_chunk_adam and self.damrec_chunk_use_fla:
+                fla_h = "; chunk FLA hybrid on (CUDA+fla)"
             self.logger.info(
-                "[DamRec] Streaming ON: %s Adam (β1=%.2f, β2=%.3f)" % (mode, self.adam_beta1, self.adam_beta2)
+                "[DamRec] Streaming ON: %s (ρ=%.4f)%s" % (mode, self.damrec_rho, fla_h)
             )
         else:
-            self.logger.info("[DamRec] Streaming OFF: batch-independent forward")
+            msg = "[DamRec] Streaming OFF: batch-independent forward"
+            if self.use_chunk_adam and self.damrec_chunk_use_fla:
+                msg += " (chunk: FLA hybrid when CUDA+fla)"
+            self.logger.info(msg)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):
@@ -108,7 +110,7 @@ class DamRec(SequentialRecommender):
     def _valid_mask(self, item_seq_emb):
         return item_seq_emb.abs().sum(dim=-1) > 1e-8
 
-    def forward(self, item_seq, item_seq_len, prev_S_list=None, prev_M_list=None, prev_V_list=None):
+    def forward(self, item_seq, item_seq_len, prev_S_list=None, prev_V_r_list=None, prev_V_k_list=None):
         item_seq_emb = self.item_embedding(item_seq)
         item_seq_emb = self.emb_dropout(item_seq_emb)
         B, L, _ = item_seq_emb.size()
@@ -116,26 +118,26 @@ class DamRec(SequentialRecommender):
         valid_mask = self._valid_mask(item_seq_emb)
 
         x = item_seq_emb
-        S_list, M_list, V_list = [], [], []
+        S_list, V_r_list, V_k_list = [], [], []
         for i, layer in enumerate(self.layers):
             S_init = prev_S_list[i] if prev_S_list is not None else None
-            M_init = prev_M_list[i] if prev_M_list is not None else None
-            V_init = prev_V_list[i] if prev_V_list is not None else None
+            vr_init = prev_V_r_list[i] if prev_V_r_list is not None else None
+            vk_init = prev_V_k_list[i] if prev_V_k_list is not None else None
             ret = layer(
                 x,
                 S_init=S_init,
-                M_init=M_init,
-                V_init=V_init,
+                V_r_init=vr_init,
+                V_k_init=vk_init,
                 valid_mask=valid_mask,
                 return_S=True,
             )
             if self.use_chunk_adam:
-                x, S, M, V, _ = ret
+                x, S, V_r, V_k, _ = ret
             else:
-                x, S, M, V = ret
+                x, S, V_r, V_k = ret
             S_list.append(S)
-            M_list.append(M)
-            V_list.append(V)
+            V_r_list.append(V_r)
+            V_k_list.append(V_k)
 
         last_idx = (item_seq_len - 1).clamp(min=0)
         out = self.gather_indexes(x, last_idx)
@@ -143,7 +145,6 @@ class DamRec(SequentialRecommender):
 
     def forward_with_streaming(self, item_seq, item_seq_len, user_ids, update_state=True):
         """update_state=False: read-only for predict, avoids double-update in T2T."""
-        # uid 键一致性检查：仅首次 batch 打印一次
         if DEBUG_STATE_LOAD and not getattr(DamRec, "_debug_uid_key_printed", False):
             DamRec._debug_uid_key_printed = True
             batch_size = item_seq.size(0)
@@ -171,7 +172,9 @@ class DamRec(SequentialRecommender):
                 print("\n".join(lines))
 
         if DEBUG_T2T_STREAMING and not getattr(DamRec, "_t2t_debug_layer_printed", False):
-            print(f"\n[DEBUG] DamRec Layer Type: {type(self.layers[0]).__name__}, FLA_AVAILABLE: {_FLA_AVAILABLE}, use_chunk_adam: {self.use_chunk_adam}\n")
+            print(
+                f"\n[DEBUG] DamRec Layer: {type(self.layers[0]).__name__}, use_chunk: {self.use_chunk_adam}\n"
+            )
             DamRec._t2t_debug_layer_printed = True
 
         item_seq_emb = self.item_embedding(item_seq)
@@ -192,66 +195,82 @@ class DamRec(SequentialRecommender):
                 update_mask[i, :valid_len] = True
         update_mask = update_mask & valid_mask
 
-        S_batch_list, M_batch_list, V_batch_list = [], [], []
-        step_batch_list = [] if self.use_chunk_adam else None
+        d_h = self.embedding_size // self.num_heads
+        S_batch_list, V_r_batch_list, V_k_batch_list = [], [], []
+        step_batch_list = []
+        cum_batch = torch.zeros(batch_size, device=device, dtype=torch.float32)
         if DEBUG_STATE_LOAD:
             if not hasattr(DamRec, "_debug_no_state_uids"):
                 DamRec._debug_no_state_uids = []
                 DamRec._debug_ok_state_list = []
         for layer_idx, layer in enumerate(self.layers):
-            S_list, M_list, V_list = [], [], []
-            step_list = [] if self.use_chunk_adam else None
+            S_list, vr_list, vk_list = [], [], []
+            step_list = []
             for i in range(batch_size):
                 uid = user_ids[i].item()
                 if uid in self._streaming_state:
                     state = self._streaming_state[uid]
                     S_list.append(state[0][layer_idx])
-                    M_list.append(state[1][layer_idx])
-                    V_list.append(state[2][layer_idx])
+                    vr_list.append(state[1][layer_idx])
+                    vk_list.append(state[2][layer_idx])
+                    cum_i = state[3]
+                    if isinstance(cum_i, torch.Tensor):
+                        cum_batch[i] = float(cum_i.item())
+                    else:
+                        cum_batch[i] = float(cum_i)
+                    if self.use_chunk_adam:
+                        if len(state) > 4 and state[4] is not None:
+                            st = state[4]
+                            sv = st[layer_idx] if isinstance(st, (list, tuple)) else 0.0
+                            step_list.append(
+                                torch.tensor(float(sv), device=device, dtype=torch.float32)
+                            )
+                        else:
+                            step_list.append(torch.tensor(0.0, device=device, dtype=torch.float32))
                     if DEBUG_STATE_LOAD and layer_idx == 0 and len(DamRec._debug_ok_state_list) < 20:
-                        s0, m0 = state[0][0], state[1][0]
-                        DamRec._debug_ok_state_list.append((uid, s0.abs().sum().item(), m0.abs().sum().item()))
-                    if self.use_chunk_adam and state[3] is not None:
-                        step_list.append(state[3][layer_idx])
-                    elif self.use_chunk_adam:
-                        step_list.append(torch.tensor(0.0, device=device, dtype=torch.float32))
+                        s0 = state[0][0]
+                        vr0 = state[1][0]
+                        DamRec._debug_ok_state_list.append((uid, s0.abs().sum().item(), vr0.abs().sum().item()))
                 else:
-                    d_h = self.embedding_size // self.num_heads
                     S_list.append(torch.zeros(self.num_heads, d_h, d_h, device=device))
-                    M_list.append(torch.zeros(self.num_heads, d_h, d_h, device=device))
-                    V_list.append(torch.zeros(self.num_heads, d_h, d_h, device=device))
+                    vr_list.append(torch.zeros(self.num_heads, d_h, device=device))
+                    vk_list.append(torch.zeros(self.num_heads, d_h, device=device))
                     if DEBUG_STATE_LOAD and layer_idx == 0 and len(DamRec._debug_no_state_uids) < 20:
                         DamRec._debug_no_state_uids.append(uid)
                     if self.use_chunk_adam:
                         step_list.append(torch.tensor(0.0, device=device, dtype=torch.float32))
             S_batch_list.append(torch.stack(S_list, dim=0))
-            M_batch_list.append(torch.stack(M_list, dim=0))
-            V_batch_list.append(torch.stack(V_list, dim=0))
+            V_r_batch_list.append(torch.stack(vr_list, dim=0))
+            V_k_batch_list.append(torch.stack(vk_list, dim=0))
             if self.use_chunk_adam:
                 step_batch_list.append(torch.stack(step_list, dim=0))
+
+        step_init_tok = (cum_batch - item_seq_len.float().clamp(min=1.0)).clamp(min=0.0)
 
         x = item_seq_emb
         for layer_idx, layer in enumerate(self.layers):
             layer_kw = dict(
                 x=x,
                 S_init=S_batch_list[layer_idx],
-                M_init=M_batch_list[layer_idx],
-                V_init=V_batch_list[layer_idx],
+                V_r_init=V_r_batch_list[layer_idx],
+                V_k_init=V_k_batch_list[layer_idx],
                 valid_mask=valid_mask,
                 update_mask=update_mask,
                 return_S=True,
             )
             if self.use_chunk_adam:
                 layer_kw["step_init"] = step_batch_list[layer_idx]
+            else:
+                layer_kw["step_init"] = step_init_tok
             ret = layer(**layer_kw)
             if self.use_chunk_adam:
-                x, S_new, M_new, V_new, step_new = ret
+                x, S_new, vr_new, vk_new, step_new = ret
                 step_batch_list[layer_idx] = step_new
             else:
-                x, S_new, M_new, V_new = ret
+                x, S_new, vr_new, vk_new = ret
             S_batch_list[layer_idx] = S_new
-            M_batch_list[layer_idx] = M_new
-            V_batch_list[layer_idx] = V_new
+            V_r_batch_list[layer_idx] = vr_new
+            V_k_batch_list[layer_idx] = vk_new
 
         last_idx = (item_seq_len - 1).clamp(min=0)
         out = self.gather_indexes(x, last_idx)
@@ -266,7 +285,7 @@ class DamRec(SequentialRecommender):
                 if no_uids:
                     lines.append(f"  NO STATE (前{len(no_uids)}): {no_uids}")
                 if ok_list:
-                    parts = [f"uid={u}:S={s:.3f} M={m:.3f}" for u, s, m in ok_list[:10]]
+                    parts = [f"uid={u}:S={s:.3f} Vr={m:.3f}" for u, s, m in ok_list[:10]]
                     lines.append(f"  FOUND (前{len(ok_list)}): " + " | ".join(parts) + (" ..." if len(ok_list) > 10 else ""))
                 lines.append("=" * 50)
                 print("\n".join(lines))
@@ -277,19 +296,19 @@ class DamRec(SequentialRecommender):
                     uid = user_ids[i].item()
                     new_len = item_seq_len[i].item()
                     stored_S = tuple(s[i].detach().clone() for s in S_batch_list)
-                    stored_M = tuple(m[i].detach().clone() for m in M_batch_list)
-                    stored_V = tuple(v[i].detach().clone() for v in V_batch_list)
-                    if DEBUG_T2T_STREAMING:
-                        cnt = getattr(DamRec, "_t2t_debug_m_count", 0)
-                        if cnt < 50:
-                            m_mean = sum(m.abs().mean().item() for m in stored_M) / len(stored_M)
-                            print(f"[DEBUG] DamRec uid={uid} Step {new_len}, M_mean: {m_mean:.6f}")
-                            DamRec._t2t_debug_m_count = cnt + 1
-                    if self.use_chunk_adam:
-                        stored_step = tuple(st[i].detach().clone() for st in step_batch_list)
-                        self._streaming_state[uid] = (stored_S, stored_M, stored_V, stored_step, new_len, device)
+                    stored_vr = tuple(v[i].detach().clone() for v in V_r_batch_list)
+                    stored_vk = tuple(v[i].detach().clone() for v in V_k_batch_list)
+                    uid_in = uid in self._streaming_state
+                    if uid_in:
+                        cum_new = cum_batch[i].item() + 1.0
                     else:
-                        self._streaming_state[uid] = (stored_S, stored_M, stored_V, None, new_len, device)
+                        cum_new = float(new_len)
+                    cum_tensor = torch.tensor(cum_new, device=device, dtype=torch.float32)
+                    if self.use_chunk_adam:
+                        st_tup = tuple(float(step_batch_list[j][i].item()) for j in range(self.n_layers))
+                        self._streaming_state[uid] = (stored_S, stored_vr, stored_vk, cum_tensor, st_tup, new_len, device)
+                    else:
+                        self._streaming_state[uid] = (stored_S, stored_vr, stored_vk, cum_tensor, None, new_len, device)
 
         return out
 

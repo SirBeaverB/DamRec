@@ -1,19 +1,19 @@
-# DamRec 非流式配置 - Adam 等价 delta rule
+# DamRec — 与 instruct.md 一致（α/β 门控 + 秩一 V_r,V_k + P 预条件）
 # Use: python run_recbole.py --model=DamRec --config_files=recbole/properties/quick_start_config/sequential_DamRec.yaml
-# 注意: Adam sqrt/除法易产生 NaN，必须关闭 AMP；use_compile 也可能引发问题
+# 关闭 AMP 可避免除法数值问题
 
 dataset: ml-100k
 MAX_ITEM_LIST_LENGTH: 50
 embedding_size: 64
 streaming_mode: False
 dropout_prob: 0.2
-adam_beta1: 0.9
-adam_beta2: 0.99
-adam_eps: 1e-4
-adam_eta: 0.05
-use_chunk_adam: True   # FLA 加速 + Chunk 级 Adam
-enable_amp: False      # Adam 除法易 NaN，必须关闭
-use_compile: False     # 避免 compile 与 ChunkAdam 的兼容问题
+damrec_rho: 0.99
+damrec_eps: 1e-4
+damrec_chunk_size: 16
+damrec_chunk_use_fla: True
+use_chunk_adam: True
+enable_amp: False
+use_compile: False
 train_neg_sample_args: ~
 
 eval_args:

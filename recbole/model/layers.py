@@ -2293,14 +2293,10 @@ class GatedDeltaLayerNesterov(nn.Module):
         return out_seq
 
 
-class GatedDeltaLayerAdam(nn.Module):
-    r"""DamRec token-level layer. Adam variant: SGD → Adam.
-    delta = (v - Sk) ⊗ k^T
-    m_t = β1*m_{t-1} + (1-β1)*delta
-    v_t = β2*v_{t-1} + (1-β2)*delta^2
-    S_t = S_{t-1} + γ * m_t / (sqrt(v_t) + ε)
-    No FLA path; streaming stores (S, M, V) per user.
-    """
+class GatedDeltaLayerDamRec(nn.Module):
+    r"""DamRec token-level layer per instruct.md §5–6, §11.
+    S̃=αS, r=S̃k−v, V_r/V_k rank-1 EMA of (r⊙r),(k⊙k), P=√(V_r V_k^T / (1−ρ^t)+ε),
+    S=αS+β((−r)k^T ⊘ P). Second-moment updates are stop-gradient."""
 
     def __init__(
         self,
@@ -2309,18 +2305,16 @@ class GatedDeltaLayerAdam(nn.Module):
         conv_kernel_size=3,
         ffn_ratio=4,
         dropout=0.1,
-        adam_beta1=0.9,
-        adam_beta2=0.999,
-        adam_eps=1e-8,
+        damrec_rho=0.99,
+        damrec_eps=1e-8,
     ):
         super().__init__()
         assert d_model % num_heads == 0
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_head = d_model // num_heads
-        self.beta1 = adam_beta1
-        self.beta2 = adam_beta2
-        self.eps = adam_eps
+        self.rho = damrec_rho
+        self.eps = damrec_eps
 
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
@@ -2328,7 +2322,8 @@ class GatedDeltaLayerAdam(nn.Module):
         self.q_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
         self.k_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
         self.v_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
-        self.gamma_gate = nn.Linear(d_model, 1)
+        self.alpha_gate = nn.Linear(d_model, 1)
+        self.beta_gate = nn.Linear(d_model, 1)
         self.out_gate = nn.Linear(d_model, 1)
 
         ffn_hidden = d_model * ffn_ratio
@@ -2337,30 +2332,37 @@ class GatedDeltaLayerAdam(nn.Module):
         self.ffn_down = nn.Linear(ffn_hidden, d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def _adam_step(self, q, k, v, S, M, V, gamma, step):
-        """delta = (v-Sk)⊗k^T; m=β1*m+(1-β1)*δ; v=β2*v+(1-β2)*δ²;
-        偏差校正: m̂=m/(1-β1^t), v̂=v/(1-β2^t); S_new = S + γ*m̂/(√v̂+ε)"""
-        Sk = torch.einsum("bhij,bhj->bhi", S, k)
-        delta = torch.einsum("bhi,bhj->bhij", v - Sk, k)
-        delta = torch.nan_to_num(delta, nan=0.0, posinf=0.0, neginf=0.0)
-        M_new = self.beta1 * M + (1.0 - self.beta1) * delta
-        V_new = self.beta2 * V + (1.0 - self.beta2) * (delta ** 2)
-        V_new = V_new.clamp(min=0.0)
-        # 偏差校正: 修正 M,V 零初始化的偏置，避免早期 token 退化为 Sign Descent
-        bc1 = max(1e-8, 1.0 - (self.beta1 ** step))
-        bc2 = max(1e-8, 1.0 - (self.beta2 ** step))
-        M_hat = M_new / bc1
-        V_hat = V_new / bc2
-        denom = (torch.sqrt(V_hat) + self.eps).clamp(min=1e-6)
-        S_new = S + gamma * (M_hat / denom)
-        return S_new, M_new, V_new
+    def _damrec_step(self, k, v, S, V_r, V_k, alpha, beta, step_1based):
+        """V_r,V_k: [B,H,d_h]; step_1based: scalar tensor for bias (1−ρ^t)."""
+        S_tilde = alpha * S
+        Sk = torch.einsum("bhij,bhj->bhi", S_tilde, k)
+        r = Sk - v
+        rr = (r * r).detach()
+        kk = (k * k).detach()
+        with torch.no_grad():
+            V_r_new = self.rho * V_r + (1.0 - self.rho) * rr
+            V_k_new = self.rho * V_k + (1.0 - self.rho) * kk
+        bc = (1.0 - torch.pow(self.rho, step_1based)).clamp(min=1e-8)
+        bc_b = bc.view(-1, 1, 1, 1)
+        # P[i,j] = sqrt(V_r[i]*V_k[j]/bc + ε), broadcast [B,H,d_h,d_h]
+        P = torch.sqrt(
+            (V_r_new.unsqueeze(-1) * V_k_new.unsqueeze(-2)) / bc_b + self.eps
+        ).clamp(min=1e-6)
+        G = torch.einsum("bhi,bhj->bhij", r, k)
+        update_scaled = G / P
+        update_scaled = torch.nan_to_num(update_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+        # instruct §11: update = (-r)⊗k / P = -G/P; S = αS + β * update_scaled
+        update_scaled = -update_scaled
+        S_new = alpha * S + beta * update_scaled
+        return S_new, V_r_new, V_k_new
 
     def forward(
         self,
         x,
         S_init=None,
-        M_init=None,
-        V_init=None,
+        V_r_init=None,
+        V_k_init=None,
+        step_init=None,
         valid_mask=None,
         update_mask=None,
         return_S=False,
@@ -2381,7 +2383,8 @@ class GatedDeltaLayerAdam(nn.Module):
         k = k.view(B, L, self.num_heads, self.d_head)
         v = v.view(B, L, self.num_heads, self.d_head)
 
-        gamma_gates = torch.sigmoid(self.gamma_gate(x))
+        alpha_gates = torch.sigmoid(self.alpha_gate(x))
+        beta_gates = torch.sigmoid(self.beta_gate(x))
         out_gates = torch.sigmoid(self.out_gate(x))
 
         vmask = valid_mask if valid_mask is not None else torch.ones(B, L, dtype=torch.bool, device=device)
@@ -2396,30 +2399,37 @@ class GatedDeltaLayerAdam(nn.Module):
         v = v.transpose(1, 2)
 
         if S_init is None:
-            S = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device)
+            S = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device, dtype=x.dtype)
         else:
             S = S_init
-        if M_init is None:
-            M = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device)
+        if V_r_init is None:
+            V_r = torch.zeros(B, self.num_heads, self.d_head, device=device, dtype=x.dtype)
         else:
-            M = M_init
-        if V_init is None:
-            V = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device)
+            V_r = V_r_init
+        if V_k_init is None:
+            V_k = torch.zeros(B, self.num_heads, self.d_head, device=device, dtype=x.dtype)
         else:
-            V = V_init
+            V_k = V_k_init
+
+        if step_init is None:
+            step_base = torch.zeros(B, device=device, dtype=x.dtype)
+        else:
+            step_base = step_init.to(device=device, dtype=x.dtype)
 
         outputs = []
         for t in range(L):
             q_t = q[:, :, t, :]
             k_t = k[:, :, t, :]
             v_t = v[:, :, t, :]
-            gamma_t = gamma_gates[:, t, :].view(B, 1, 1, 1)
-            step = t + 1
-            S_new, M_new, V_new = self._adam_step(q_t, k_t, v_t, S, M, V, gamma_t, step)
+            alpha_t = alpha_gates[:, t, :].view(B, 1, 1, 1)
+            beta_t = beta_gates[:, t, :].view(B, 1, 1, 1)
+            step_1based = step_base + (t + 1)
+            S_new, V_r_new, V_k_new = self._damrec_step(k_t, v_t, S, V_r, V_k, alpha_t, beta_t, step_1based)
             mask_t = mask_for_update[:, t].view(B, 1, 1, 1)
+            mask_v = mask_for_update[:, t].view(B, 1, 1)
             S = torch.where(mask_t, S_new, S)
-            M = torch.where(mask_t, M_new, M)
-            V = torch.where(mask_t, V_new, V)
+            V_r = torch.where(mask_v, V_r_new, V_r)
+            V_k = torch.where(mask_v, V_k_new, V_k)
             out_t = torch.einsum("bhij,bhj->bhi", S, q_t)
             outputs.append(out_t)
 
@@ -2429,8 +2439,12 @@ class GatedDeltaLayerAdam(nn.Module):
         out_seq = out_seq + self.dropout(self.ffn_down(ffn))
 
         if return_S:
-            return out_seq, S, M, V
+            return out_seq, S, V_r, V_k
         return out_seq
+
+
+# Backward-compatible alias (DamRec 现与 instruct.md 一致，非 Adam）
+GatedDeltaLayerAdam = GatedDeltaLayerDamRec
 
 
 class GatedDeltaLayerChunkMomentum(nn.Module):
@@ -2720,13 +2734,14 @@ class GatedDeltaLayerChunkNesterov(nn.Module):
         return out_seq
 
 
-class GatedDeltaLayerChunkAdam(nn.Module):
-    r"""DamRec chunk-level layer. FLA 内部一阶 + Chunk 边界 Adam 更新。
-    - 微观 (Intra-Chunk): FLA chunk_gated_delta_rule，纯 GDN
-    - 宏观 (Inter-Chunk): M_new = β1*M + (1-β1)*ΔS, V_new = β2*V + (1-β2)*ΔS², S_next = S_end + η*M/(√V+ε)
+class GatedDeltaLayerChunkDamRec(nn.Module):
+    r"""DamRec chunk：instruct.md §7 + 补充「预条件吸收与 FLA」。
+
+    FLA 路径：用秩一向量 ``s_r,s_k`` 将 ``P_{nC}`` 吸收进 ``k,v,S``，在缩放空间调用 ``chunk_gated_delta_rule``，
+    输出按方案 A 用 ``1/s_r`` 修正；块间 ``V_r,V_k`` 按 (38)(39) 在 ``no_grad`` 中更新（残差用块首 ``S`` 近似）。
+    非 FLA：块内逐步 ``_intra_step``（固定 ``P`` 矩阵）。
     """
 
-    CHUNK_SIZE = 16  # 必须 ≤ MAX_ITEM_LIST_LENGTH(50)，否则宏观 Adam 成死代码
     _logged = False
 
     def __init__(
@@ -2736,21 +2751,20 @@ class GatedDeltaLayerChunkAdam(nn.Module):
         conv_kernel_size=3,
         ffn_ratio=4,
         dropout=0.1,
-        adam_beta1=0.9,
-        adam_beta2=0.999,
-        adam_eps=1e-8,
-        adam_eta=0.1,
+        damrec_rho=0.99,
+        damrec_eps=1e-8,
+        damrec_chunk_size=16,
+        use_fla_intrachunk=True,
     ):
         super().__init__()
         assert d_model % num_heads == 0
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_head = d_model // num_heads
-        self.beta1 = adam_beta1
-        self.beta2 = adam_beta2
-        self.eps = adam_eps
-        self.eta = adam_eta
-        self._use_fla = _FLA_AVAILABLE
+        self.rho = damrec_rho
+        self.eps = damrec_eps
+        self.chunk_size = damrec_chunk_size
+        self.use_fla_intrachunk = use_fla_intrachunk
 
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
@@ -2758,8 +2772,8 @@ class GatedDeltaLayerChunkAdam(nn.Module):
         self.q_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
         self.k_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
         self.v_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.alpha_gate = nn.Linear(d_model, 1)
         self.beta_gate = nn.Linear(d_model, 1)
-        self.gamma_gate = nn.Linear(d_model, 1)
         self.out_gate = nn.Linear(d_model, 1)
 
         ffn_hidden = d_model * ffn_ratio
@@ -2768,14 +2782,22 @@ class GatedDeltaLayerChunkAdam(nn.Module):
         self.ffn_down = nn.Linear(ffn_hidden, d_model)
         self.dropout = nn.Dropout(dropout)
 
-        nn.init.constant_(self.beta_gate.bias, 1.0)
+    def _intra_step(self, k, v, S, P_fixed, alpha, beta):
+        """Fixed P; S = αS + β * (−(r k^T) ⊘ P)."""
+        S_tilde = alpha * S
+        Sk = torch.einsum("bhij,bhj->bhi", S_tilde, k)
+        r = Sk - v
+        G = torch.einsum("bhi,bhj->bhij", r, k)
+        upd = -(G / P_fixed)
+        upd = torch.nan_to_num(upd, nan=0.0, posinf=0.0, neginf=0.0)
+        return alpha * S + beta * upd, r
 
     def forward(
         self,
         x,
         S_init=None,
-        M_init=None,
-        V_init=None,
+        V_r_init=None,
+        V_k_init=None,
         step_init=None,
         valid_mask=None,
         update_mask=None,
@@ -2797,91 +2819,207 @@ class GatedDeltaLayerChunkAdam(nn.Module):
         k = k.view(B, L, self.num_heads, self.d_head)
         v = v.view(B, L, self.num_heads, self.d_head)
 
+        alpha_gates = torch.sigmoid(self.alpha_gate(x))
         beta_gates = torch.sigmoid(self.beta_gate(x))
-        gamma_gates = torch.sigmoid(self.gamma_gate(x))
         out_gates = torch.sigmoid(self.out_gate(x))
 
         vmask = valid_mask if valid_mask is not None else torch.ones(B, L, dtype=torch.bool, device=device)
         mask_for_update = (vmask & update_mask) if update_mask is not None else vmask
 
-        if not self._use_fla or not x.is_cuda:
-            raise RuntimeError("GatedDeltaLayerChunkAdam requires FLA and CUDA")
+        use_fla = (
+            self.use_fla_intrachunk
+            and _FLA_AVAILABLE
+            and x.is_cuda
+        )
 
-        if not GatedDeltaLayerChunkAdam._logged:
+        if not GatedDeltaLayerChunkDamRec._logged:
             import logging
+            extra = ""
+            if use_fla:
+                extra = " | FLA: P→s_r,s_k 吸收 + 缩放空间 GDN + q 方案 A（见 instruct 补充）"
             logging.getLogger("recbole").info(
-                "[DamRec ChunkAdam] FLA + chunk-level Adam (β1=%.2f, β2=%.3f, η=%.2f)"
-                % (self.beta1, self.beta2, self.eta)
+                "[DamRec Chunk] instruct §7: fixed-P + block V (ρ=%.3f, C=%d, FLA=%s)%s"
+                % (self.rho, self.chunk_size, "on" if use_fla else "off", extra)
             )
-            GatedDeltaLayerChunkAdam._logged = True
+            GatedDeltaLayerChunkDamRec._logged = True
 
-        C = self.CHUNK_SIZE
-        outputs = []
+        C = self.chunk_size
         S = S_init
-        M = M_init
-        V = V_init
+        V_r = V_r_init
+        V_k = V_k_init
         if S is None:
             S = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device, dtype=x.dtype)
-        if M is None:
-            M = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device, dtype=x.dtype)
-        if V is None:
-            V = torch.zeros(B, self.num_heads, self.d_head, self.d_head, device=device, dtype=x.dtype)
+        if V_r is None:
+            V_r = torch.zeros(B, self.num_heads, self.d_head, device=device, dtype=x.dtype)
+        if V_k is None:
+            V_k = torch.zeros(B, self.num_heads, self.d_head, device=device, dtype=x.dtype)
         if step_init is None:
-            base_step = torch.zeros(B, device=device, dtype=torch.float32)
+            base_step = torch.zeros(B, device=device, dtype=x.dtype)
         else:
-            base_step = step_init
+            base_step = step_init.to(device=device, dtype=x.dtype)
 
-        for chunk_idx, start in enumerate(range(0, L, C)):
-            chunk_step = base_step + (chunk_idx + 1)
+        outputs = []
+        num_chunks = (L + C - 1) // C
+
+        for start in range(0, L, C):
+            n = start // C
             end = min(start + C, L)
+            clen = end - start
             q_c = q[:, start:end, :, :]
             k_c = k[:, start:end, :, :]
             v_c = v[:, start:end, :, :]
             mask_c = mask_for_update[:, start:end]
 
-            mask_H = mask_c.view(B, end - start, 1, 1).to(k_c.dtype)
-            eps_kv = 1e-8
-            k_c = torch.where(mask_H.expand_as(k_c).bool(), k_c, torch.full_like(k_c, eps_kv))
-            v_c = torch.where(mask_H.expand_as(v_c).bool(), v_c, torch.full_like(v_c, eps_kv))
-            beta_c = torch.where(mask_c.unsqueeze(-1), beta_gates[:, start:end, :], torch.ones_like(beta_gates[:, start:end, :]))
-
-            g_c = torch.log(beta_c.expand(-1, -1, self.num_heads).clamp(min=1e-8))
-            beta_fla = gamma_gates[:, start:end, :].expand(-1, -1, self.num_heads)
-
+            bias_corr = max(1.0 - (self.rho ** (float(n * C) + 1.0)), 1e-8)
             S_start = S
-            o_c, S_end = chunk_gated_delta_rule(
-                q=q_c, k=k_c, v=v_c,
-                g=g_c, beta=beta_fla,
-                scale=1.0,
-                initial_state=S,
-                output_final_state=True,
-                use_qk_l2norm_in_kernel=False,
-            )
-            delta_S = S_end - S_start
-            delta_S = torch.nan_to_num(delta_S, nan=0.0, posinf=0.0, neginf=0.0)
-            M = self.beta1 * M + (1.0 - self.beta1) * delta_S
-            V = self.beta2 * V + (1.0 - self.beta2) * (delta_S ** 2)
-            V = V.clamp(min=0.0)
-            step_view = chunk_step.view(B, 1, 1, 1)
-            bc1 = (1.0 - torch.pow(self.beta1, step_view)).clamp(min=1e-8)
-            bc2 = (1.0 - torch.pow(self.beta2, step_view)).clamp(min=1e-8)
-            M_hat = M / bc1
-            V_hat = (V / bc2).clamp(min=1e-10)  # 避免 sqrt(0) 数值问题
-            denom = (torch.sqrt(V_hat) + self.eps).clamp(min=1e-6)
-            S = S_end + self.eta * (M_hat / denom)
-            S = torch.nan_to_num(S, nan=0.0, posinf=0.0, neginf=0.0)  # 防止 NaN 传播
 
-            outputs.append(o_c)
+            if use_fla:
+                sqrt_eps = max(self.eps ** 0.5, 1e-6)
+                Vr = V_r.clamp(min=0.0)
+                Vk = V_k.clamp(min=0.0)
+                s_r = 1.0 / (torch.sqrt(Vr / bias_corr) + sqrt_eps)
+                s_k = 1.0 / (torch.sqrt(Vk / bias_corr) + sqrt_eps)
+                # 仅 max 时 s_* 可极小 → q_adj=q/s_k 爆炸，FLA 对 (I+A)^{-1} 反向易 NaN
+                s_r = s_r.clamp(min=1e-4, max=1e6)
+                s_k = s_k.clamp(min=1e-4, max=1e6)
+                S_scaled = S_start * s_r.unsqueeze(-1) * s_k.unsqueeze(-2)
+                S_scaled = torch.nan_to_num(S_scaled, nan=0.0, posinf=0.0, neginf=0.0).clamp(
+                    min=-1e3, max=1e3
+                )
+                k_scaled = k_c * s_k.unsqueeze(1)
+                v_scaled = v_c * s_r.unsqueeze(1)
+                q_adj = q_c / s_k.unsqueeze(1)
+                q_adj = torch.nan_to_num(q_adj, nan=0.0, posinf=0.0, neginf=0.0).clamp(
+                    min=-1e2, max=1e2
+                )
 
-        final_step = base_step + len(list(range(0, L, C)))
-        out_seq = torch.cat(outputs, dim=1).reshape(B, L, d)
+                mask_H = mask_c.view(B, clen, 1, 1).to(k_scaled.dtype)
+                # 与 GatedDeltaLayer FLA 一致：占位处 k,v 用小常数；β 勿用 1e-8（FLA 对 (I+A)^{-1} 反向会病态致 NaN）
+                eps_kv = 1e-4
+                k_f = torch.where(mask_H.expand_as(k_scaled).bool(), k_scaled, torch.full_like(k_scaled, eps_kv))
+                v_f = torch.where(mask_H.expand_as(v_scaled).bool(), v_scaled, torch.full_like(v_scaled, eps_kv))
+                q_in = torch.where(mask_H.expand_as(q_adj).bool(), q_adj, torch.zeros_like(q_adj))
+                ag = alpha_gates[:, start:end, :]
+                bg = beta_gates[:, start:end, :]
+                ag = torch.where(mask_c.unsqueeze(-1), ag, torch.ones_like(ag))
+                bg = torch.where(mask_c.unsqueeze(-1), bg, torch.ones_like(bg))
+                g_c = torch.log(ag.expand(-1, -1, self.num_heads).clamp(min=1e-8))
+                g_c = g_c.clamp(min=-25.0, max=0.0)
+                # β 过小会使 FLA 三角求解反向病态；略抬高下限（与占位 β=1 一致）
+                beta_fla = bg.expand(-1, -1, self.num_heads).clamp(min=1e-2, max=1.0)
+                # FLA 自定义 CUDA 反向在 fp16/bf16 下易 NaN；此处强制 fp32 且关闭 autocast
+                _fl_dt = torch.float32
+                q_fl = q_in.to(_fl_dt).clamp(min=-1e2, max=1e2)
+                k_fl = k_f.to(_fl_dt).clamp(min=-1e2, max=1e2)
+                v_fl = v_f.to(_fl_dt).clamp(min=-1e2, max=1e2)
+                g_fl = g_c.to(_fl_dt)
+                b_fl = beta_fla.to(_fl_dt)
+                s0_fl = S_scaled.to(_fl_dt)
+                _cuda_tf32 = None
+                _cudnn_tf32 = None
+                if device.type == "cuda":
+                    _cuda_tf32 = torch.backends.cuda.matmul.allow_tf32
+                    torch.backends.cuda.matmul.allow_tf32 = False
+                    if hasattr(torch.backends.cudnn, "allow_tf32"):
+                        _cudnn_tf32 = torch.backends.cudnn.allow_tf32
+                        torch.backends.cudnn.allow_tf32 = False
+                try:
+                    with torch.amp.autocast(device_type=device.type, enabled=False):
+                        o_fla, S_end = chunk_gated_delta_rule(
+                            q=q_fl,
+                            k=k_fl,
+                            v=v_fl,
+                            g=g_fl,
+                            beta=b_fl,
+                            scale=1.0,
+                            initial_state=s0_fl,
+                            output_final_state=True,
+                            use_qk_l2norm_in_kernel=False,
+                        )
+                finally:
+                    if _cuda_tf32 is not None:
+                        torch.backends.cuda.matmul.allow_tf32 = _cuda_tf32
+                    if _cudnn_tf32 is not None:
+                        torch.backends.cudnn.allow_tf32 = _cudnn_tf32
+                o_fla = o_fla.to(x.dtype)
+                S_end = S_end.to(x.dtype)
+                # FLA 文档为 [B,T,H,V]；若实现为 [B,H,T,V] 则先 permute
+                if (
+                    o_fla.dim() == 4
+                    and o_fla.shape[1] == self.num_heads
+                    and o_fla.shape[2] == clen
+                ):
+                    o_fla = o_fla.permute(0, 2, 1, 3).contiguous()
+                den = (s_r.unsqueeze(-1) * s_k.unsqueeze(-2)).clamp(min=1e-12)
+                S = torch.nan_to_num(S_end / den, nan=0.0, posinf=0.0, neginf=0.0)
+                o_nd = o_fla.reshape(B, clen, self.num_heads, self.d_head)
+                o_nd = o_nd * (1.0 / s_r).unsqueeze(1).clamp(max=1e6)
+                o_fla = torch.nan_to_num(o_nd.reshape(B, clen, d), nan=0.0, posinf=0.0, neginf=0.0)
+                for t in range(clen):
+                    outputs.append(o_fla[:, t, :])
+
+                with torch.no_grad():
+                    r_list = []
+                    for t in range(clen):
+                        k_t = k_c[:, t, :, :]
+                        v_t = v_c[:, t, :, :]
+                        alpha_t = alpha_gates[:, start + t, :].view(B, 1, 1)
+                        Sk = torch.einsum("bhij,bhj->bhi", S_start.detach(), k_t)
+                        r_t = alpha_t * Sk - v_t
+                        m = mask_c[:, t].view(B, 1, 1)
+                        r_list.append(torch.where(m, r_t, torch.zeros_like(r_t)))
+                    k_list = [
+                        torch.where(
+                            mask_c[:, t].view(B, 1, 1),
+                            k_c[:, t, :, :],
+                            torch.zeros_like(k_c[:, t, :, :]),
+                        )
+                        for t in range(clen)
+                    ]
+            else:
+                P = torch.sqrt(
+                    (V_r.unsqueeze(-1) * V_k.unsqueeze(-2)) / bias_corr + self.eps
+                ).clamp(min=1e-6)
+                r_list = []
+                k_list = []
+                for t in range(clen):
+                    q_t = q_c[:, t, :, :]
+                    k_t = k_c[:, t, :, :]
+                    v_t = v_c[:, t, :, :]
+                    alpha_t = alpha_gates[:, start + t, :].view(B, 1, 1, 1)
+                    beta_t = beta_gates[:, start + t, :].view(B, 1, 1, 1)
+                    m = mask_c[:, t].view(B, 1, 1, 1)
+                    S_new, r_t = self._intra_step(k_t, v_t, S, P, alpha_t, beta_t)
+                    S = torch.where(m, S_new, S)
+                    r_list.append(torch.where(m, r_t, torch.zeros_like(r_t)))
+                    k_list.append(torch.where(m, k_t, torch.zeros_like(k_t)))
+                    out_t = torch.einsum("bhij,bhj->bhi", S, q_t)
+                    outputs.append(out_t.reshape(B, d))
+
+            # Block V update (38)(39); τ 权重 ρ^{clen-1-j}
+            r_stack = torch.stack(r_list, dim=1).detach()
+            k_stack = torch.stack(k_list, dim=1).detach()
+            idx = torch.arange(clen, device=device, dtype=x.dtype)
+            w = self.rho ** (clen - 1 - idx)
+            w = w.view(1, clen, 1, 1)
+            weighted_rr = ((r_stack ** 2) * w).sum(dim=1)
+            weighted_kk = ((k_stack ** 2) * w).sum(dim=1)
+            with torch.no_grad():
+                V_r = (self.rho ** clen) * V_r + (1.0 - self.rho) * weighted_rr
+                V_k = (self.rho ** clen) * V_k + (1.0 - self.rho) * weighted_kk
+
+        final_step = base_step + float(num_chunks)
+        out_seq = torch.stack(outputs, dim=1).reshape(B, L, d)
         out_seq = out_seq * out_gates + x
         ffn = self.ffn_gate(out_seq) * fn.silu(self.ffn_up(out_seq))
         out_seq = out_seq + self.dropout(self.ffn_down(ffn))
 
         if return_S:
-            return out_seq, S, M, V, final_step
+            return out_seq, S, V_r, V_k, final_step
         return out_seq
+
+
+GatedDeltaLayerChunkAdam = GatedDeltaLayerChunkDamRec
 
 
 class GatedDeltaLayerChunkFroAdam(nn.Module):

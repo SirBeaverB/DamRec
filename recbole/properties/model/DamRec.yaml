@@ -1,5 +1,4 @@
-# DamRec: Delta-Adam Memory for Streaming Recommendation
-# SGD → Adam 等价更新
+# DamRec: 与 instruct.md 一致的预条件门控 Delta（秩一 V_r/V_k，ρ-EMA）
 
 embedding_size: 64
 dropout_prob: 0.3
@@ -12,9 +11,10 @@ conv_kernel_size: 3
 ffn_ratio: 4
 streaming_mode: False
 
-# Adam 等价参数 (η 过小会退化成 GDN，0.05 为折中)
-adam_beta1: 0.9
-adam_beta2: 0.99      # 流式步数少，加快方差遗忘
-adam_eps: 1e-4        # 适度稳定，不压制自适应
-adam_eta: 0.05        # 0.02 过小易退化成 GDN，0.1 可能过猛
-use_chunk_adam: False   # True=Chunk 级 FLA 加速
+# instruct.md 二阶矩 EMA 与数值稳定
+damrec_rho: 0.99
+damrec_eps: 1e-4
+damrec_chunk_size: 16
+# Chunk 时：块内 FLA 加速 + no_grad 下 instruct 影子循环，仅用于 V 的 (38)(39)（需 CUDA+flash-linear-attention）
+damrec_chunk_use_fla: True
+use_chunk_adam: False

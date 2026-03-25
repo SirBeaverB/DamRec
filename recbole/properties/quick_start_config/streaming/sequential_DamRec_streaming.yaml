@@ -1,6 +1,5 @@
-# DamRec streaming - delta rule + Adam 式更新
-# use_chunk_adam: True 时用 FLA + Chunk 级 Adam
-# Use: python run_recbole.py --model=DamRec --config_files=recbole/properties/quick_start_config/streaming/sequential_DamRec_streaming.yaml
+# DamRec streaming — instruct.md 一致实现
+# use_chunk_adam: True 为分块 §7（无需 FLA）
 
 model: DamRec
 dataset: ml-100k
@@ -8,10 +7,10 @@ MAX_ITEM_LIST_LENGTH: 50
 embedding_size: 64
 streaming_mode: True
 dropout_prob: 0.2
-adam_beta1: 0.9
-adam_beta2: 0.99
-adam_eps: 1e-4
-adam_eta: 0.05
+damrec_rho: 0.99
+damrec_eps: 1e-4
+damrec_chunk_size: 16
+damrec_chunk_use_fla: True
 use_chunk_adam: True
 train_neg_sample_args: ~
 
@@ -26,8 +25,7 @@ eval_args:
 repeatable: True
 train_batch_size: 4096
 eval_batch_size: 2048
-# 显存不足时: --config_dict="{'train_batch_size': 1024, 'eval_batch_size': 512}"
-enable_amp: False   # AMP 下 Adam sqrt/除法易产生 NaN，DamRec 建议关闭
+enable_amp: False
 enable_scaler: False
 worker: 4
 use_compile: True

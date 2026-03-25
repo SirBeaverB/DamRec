@@ -93,7 +93,7 @@ def run_single_model(model_key, config_file, dataset="ml-100k", max_seq_len=None
         elif model_name == "NestRec":
             chunk_status["NestRec"] = "Chunk" if model.use_chunk_nesterov else "Token (FLA 未安装)"
         elif model_name == "DamRec":
-            chunk_status["DamRec"] = "Chunk" if model.use_chunk_adam else "Token (FLA 未安装)"
+            chunk_status["DamRec"] = "Chunk (instruct §7)" if model.use_chunk_adam else "Token (instruct §5–6)"
         elif model_name == "FroRec":
             chunk_status["FroRec"] = "Chunk (FroRec 仅 Chunk)"
         if chunk_status:
