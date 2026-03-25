@@ -5,9 +5,14 @@
 依次运行 GDN、MoRec、NestRec、DamRec、FroRec，记录 valid/test 各项指标和训练时间。
 配置: dataset=ml-1m, L=128(默认) 或 L=64, epochs=150, worker=4
 
+输出: recall@10 / mrr@10 / ndcg@10 / hit@10 / precision@10（valid+test）、训练时间(s)、峰值显存(GB)，
+      写入 experiment_results/non_streaming_1m_L{L}_*.txt 与同名 .csv
+
 用法:
-  python scripts/run_non_streaming_experiments_1m.py              # L=128 默认
-  python scripts/run_non_streaming_experiments_1m.py --max_seq_len 64   # L=64
+  python scripts/run_non_streaming_experiments_1m.py                         # L=128，跑全部模型
+  python scripts/run_non_streaming_experiments_1m.py --max_seq_len 64        # L=64
+  python scripts/run_non_streaming_experiments_1m.py -L 64 --models GDN DamRec   # 只跑 GDN 与 DamRec（Adam 为旧别名）
+  python scripts/run_non_streaming_experiments_1m.py -L 64 2>&1 | tee logs/ml1m_l64.txt   # 同时保存终端日志
 """
 
 import argparse
@@ -21,6 +26,8 @@ sys.path.insert(0, _script_dir)
 
 from run_non_streaming_experiments import (
     MODEL_CONFIGS,
+    MODEL_KEY_ALIASES,
+    resolve_model_key,
     run_single_model,
 )
 
@@ -32,6 +39,13 @@ def main():
     parser = argparse.ArgumentParser(description="非流式实验 ml-1m")
     parser.add_argument("--max_seq_len", "-L", type=int, default=128,
                         help="序列长度 L，默认 128；可用 64")
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=None,
+        metavar="KEY",
+        help="只跑指定模型键，如: GDN DamRec。默认跑全部。可选: GDN Mo Nest DamRec Fro（Adam 为 DamRec 别名）",
+    )
     parser.add_argument("--saved", action="store_true", help="保存 checkpoint")
     args = parser.parse_args()
 
@@ -42,12 +56,30 @@ def main():
     show_progress = True
     saved = args.saved
 
+    _valid_cli = set(MODEL_CONFIGS.keys()) | set(MODEL_KEY_ALIASES.keys())
+    if args.models:
+        bad = [k for k in args.models if k not in _valid_cli]
+        if bad:
+            raise SystemExit(
+                f"Unknown --models keys: {bad}. Valid: {sorted(_valid_cli)}"
+            )
+        model_cols = []
+        _seen = set()
+        for k in args.models:
+            nk = resolve_model_key(k)
+            if nk not in _seen:
+                _seen.add(nk)
+                model_cols.append(nk)
+    else:
+        model_cols = list(MODEL_CONFIGS.keys())
+
     # checkpoint 目录包含 L，便于区分
     proj_root = os.path.dirname(os.path.dirname(__file__))
     checkpoint_dir = os.path.join(proj_root, "saved", f"non_streaming_1m_L{max_seq_len}")
 
     results = {}
-    for model_key, config_file in MODEL_CONFIGS.items():
+    for model_key in model_cols:
+        config_file = MODEL_CONFIGS[model_key]
         ret = run_single_model(
             model_key, config_file,
             dataset=dataset,
@@ -80,9 +112,7 @@ def main():
     lines.append(f"checkpoint_dir={checkpoint_dir}")
     lines.append("")
 
-    # 表头
-    model_cols = ["GDN", "Mo", "Nest", "Adam", "Fro"]
-    sep = "-" * 90
+    sep = "-" * max(90, 12 * len(model_cols) + 20)
 
     # 按指标分行：valid / test 各一组
     for split, prefix in [("valid", "valid"), ("test", "test")]:

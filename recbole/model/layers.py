@@ -2874,23 +2874,29 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
             S_start = S
 
             if use_fla:
-                sqrt_eps = max(self.eps ** 0.5, 1e-6)
                 Vr = V_r.clamp(min=0.0)
                 Vk = V_k.clamp(min=0.0)
-                s_r = 1.0 / (torch.sqrt(Vr / bias_corr) + sqrt_eps)
-                s_k = 1.0 / (torch.sqrt(Vk / bias_corr) + sqrt_eps)
-                # 仅 max 时 s_* 可极小 → q_adj=q/s_k 爆炸，FLA 对 (I+A)^{-1} 反向易 NaN
-                s_r = s_r.clamp(min=1e-4, max=1e6)
-                s_k = s_k.clamp(min=1e-4, max=1e6)
+                # V 不足时关闭吸收；就绪后 s_* 限制在 [0.1,10]，单维最多约 10× 缩放，乘积最多约 100×，避免再出现 CE 爆炸
+                v_ready = (Vr.abs().max() > 1e-4).item() and (Vk.abs().max() > 1e-4).item()
+                if v_ready:
+                    sqrt_eps = max(self.eps ** 0.5, 1e-4)
+                    s_r = 1.0 / (torch.sqrt(Vr / bias_corr) + sqrt_eps)
+                    s_k = 1.0 / (torch.sqrt(Vk / bias_corr) + sqrt_eps)
+                    s_r = s_r.clamp(min=0.1, max=10.0)
+                    s_k = s_k.clamp(min=0.1, max=10.0)
+                else:
+                    s_r = torch.ones_like(Vr)
+                    s_k = torch.ones_like(Vk)
                 S_scaled = S_start * s_r.unsqueeze(-1) * s_k.unsqueeze(-2)
                 S_scaled = torch.nan_to_num(S_scaled, nan=0.0, posinf=0.0, neginf=0.0).clamp(
-                    min=-1e3, max=1e3
+                    min=-100.0, max=100.0
                 )
                 k_scaled = k_c * s_k.unsqueeze(1)
                 v_scaled = v_c * s_r.unsqueeze(1)
-                q_adj = q_c / s_k.unsqueeze(1)
+                sk_u = s_k.unsqueeze(1).clamp(min=0.1, max=10.0)
+                q_adj = q_c / sk_u
                 q_adj = torch.nan_to_num(q_adj, nan=0.0, posinf=0.0, neginf=0.0).clamp(
-                    min=-1e2, max=1e2
+                    min=-20.0, max=20.0
                 )
 
                 mask_H = mask_c.view(B, clen, 1, 1).to(k_scaled.dtype)
@@ -2903,18 +2909,22 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
                 bg = beta_gates[:, start:end, :]
                 ag = torch.where(mask_c.unsqueeze(-1), ag, torch.ones_like(ag))
                 bg = torch.where(mask_c.unsqueeze(-1), bg, torch.ones_like(bg))
-                g_c = torch.log(ag.expand(-1, -1, self.num_heads).clamp(min=1e-8))
+                g_c = torch.log(ag.expand(-1, -1, self.num_heads).clamp(min=1e-4))
                 g_c = g_c.clamp(min=-25.0, max=0.0)
                 # β 过小会使 FLA 三角求解反向病态；略抬高下限（与占位 β=1 一致）
                 beta_fla = bg.expand(-1, -1, self.num_heads).clamp(min=1e-2, max=1.0)
                 # FLA 自定义 CUDA 反向在 fp16/bf16 下易 NaN；此处强制 fp32 且关闭 autocast
                 _fl_dt = torch.float32
-                q_fl = q_in.to(_fl_dt).clamp(min=-1e2, max=1e2)
-                k_fl = k_f.to(_fl_dt).clamp(min=-1e2, max=1e2)
-                v_fl = v_f.to(_fl_dt).clamp(min=-1e2, max=1e2)
+                q_fl = q_in.to(_fl_dt).clamp(min=-20.0, max=20.0)
+                k_fl = k_f.to(_fl_dt).clamp(min=-20.0, max=20.0)
+                v_fl = v_f.to(_fl_dt).clamp(min=-20.0, max=20.0)
                 g_fl = g_c.to(_fl_dt)
                 b_fl = beta_fla.to(_fl_dt)
                 s0_fl = S_scaled.to(_fl_dt)
+                assert not torch.isnan(S_scaled).any(), "S_scaled has NaN before FLA"
+                assert not torch.isinf(S_scaled).any(), "S_scaled has Inf before FLA"
+                assert not torch.isnan(k_f).any(), "k_f has NaN before FLA"
+                assert not torch.isnan(v_f).any(), "v_f has NaN before FLA"
                 _cuda_tf32 = None
                 _cudnn_tf32 = None
                 if device.type == "cuda":
@@ -2943,6 +2953,8 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
                         torch.backends.cudnn.allow_tf32 = _cudnn_tf32
                 o_fla = o_fla.to(x.dtype)
                 S_end = S_end.to(x.dtype)
+                assert not torch.isnan(o_fla).any(), "o_fla has NaN after FLA forward"
+                assert not torch.isnan(S_end).any(), "S_end has NaN after FLA forward"
                 # FLA 文档为 [B,T,H,V]；若实现为 [B,H,T,V] 则先 permute
                 if (
                     o_fla.dim() == 4
@@ -2950,10 +2962,11 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
                     and o_fla.shape[2] == clen
                 ):
                     o_fla = o_fla.permute(0, 2, 1, 3).contiguous()
-                den = (s_r.unsqueeze(-1) * s_k.unsqueeze(-2)).clamp(min=1e-12)
+                # s_*∈[0.1,10] ⇒ den∈[0.01,100]
+                den = (s_r.unsqueeze(-1) * s_k.unsqueeze(-2)).clamp(min=0.01)
                 S = torch.nan_to_num(S_end / den, nan=0.0, posinf=0.0, neginf=0.0)
                 o_nd = o_fla.reshape(B, clen, self.num_heads, self.d_head)
-                o_nd = o_nd * (1.0 / s_r).unsqueeze(1).clamp(max=1e6)
+                o_nd = o_nd * (1.0 / s_r).unsqueeze(1).clamp(min=0.1, max=10.0)
                 o_fla = torch.nan_to_num(o_nd.reshape(B, clen, d), nan=0.0, posinf=0.0, neginf=0.0)
                 for t in range(clen):
                     outputs.append(o_fla[:, t, :])

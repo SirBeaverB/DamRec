@@ -1,0 +1,5 @@
+# 与 sequential_GDN / sequential_DamRec 等合并使用：ml-1m + 序列长度 64
+# 例：python run_recbole.py --model=GDN --config_files=".../sequential_GDN.yaml .../ml1m_l64.yaml"
+
+dataset: ml-1m
+MAX_ITEM_LIST_LENGTH: 64

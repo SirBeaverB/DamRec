@@ -52,7 +52,7 @@ def main():
     lines.append("非流式实验 (streaming_mode=False) - ml-100k")
     lines.append(f"dataset={dataset}, L=50, epochs={epochs}, time={timestamp}")
     lines.append("")
-    lines.append("模型\t\t\tGDN\t\tMo\t\tNest\t\tAdam\t\tFro")
+    lines.append("模型\t\t\tGDN\t\tMo\t\tNest\t\tDamRec\t\tFro")
     lines.append("-" * 70)
 
     def fmt(v):
@@ -66,7 +66,7 @@ def main():
     test_row = "test recall@10\t"
     time_row = "time (s)\t\t"
     mem_row = "显存 (GB)\t\t"
-    for k in ["GDN", "Mo", "Nest", "Adam", "Fro"]:
+    for k in ["GDN", "Mo", "Nest", "DamRec", "Fro"]:
         r = results.get(k)
         if r is None:
             valid_row += "N/A\t\t"
@@ -99,7 +99,7 @@ def main():
 
     with open(csv_file, "w", encoding="utf-8") as f:
         f.write("model,valid_recall@10,test_recall@10,train_time_sec,peak_mem_gb\n")
-        for k in ["GDN", "Mo", "Nest", "Adam", "Fro"]:
+        for k in ["GDN", "Mo", "Nest", "DamRec", "Fro"]:
             r = results.get(k)
             if r is None:
                 f.write(f"{k},N/A,N/A,N/A,N/A\n")

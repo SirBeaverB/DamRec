@@ -17,7 +17,9 @@ import os
 import sys
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _proj)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
 from recbole.config import Config
@@ -32,20 +34,23 @@ from recbole.utils import (
 )
 from recbole.data.transform import construct_transform
 
+from run_non_streaming_experiments import resolve_model_key
+
 MODEL_CONFIGS = {
     "GDN": "recbole/properties/quick_start_config/sequential_GDN.yaml",
     "Mo": "recbole/properties/quick_start_config/sequential_MoRec.yaml",
     "Nest": "recbole/properties/quick_start_config/sequential_NestRec.yaml",
-    "Adam": "recbole/properties/quick_start_config/sequential_DamRec.yaml",
+    "DamRec": "recbole/properties/quick_start_config/sequential_DamRec.yaml",
     "Fro": "recbole/properties/quick_start_config/sequential_FroRec.yaml",
     "SASRec": "recbole/properties/quick_start_config/sequential_SASRec.yaml",
 }
 
+# 旧键名 Adam 与 DamRec 同义（见 run_non_streaming_experiments.MODEL_KEY_ALIASES）
 CONFIG_TO_MODEL = {
     "GDN": "GDN",
     "Mo": "MoRec",
     "Nest": "NestRec",
-    "Adam": "DamRec",
+    "DamRec": "DamRec",
     "Fro": "FroRec",
     "SASRec": "SASRec",
 }
@@ -139,13 +144,20 @@ def main():
     args = parser.parse_args()
 
     show_progress = not args.no_progress
-    model_keys = [k.strip() for k in args.models.split(",")] if args.models else list(MODEL_CONFIGS.keys())
+    raw_keys = [k.strip() for k in args.models.split(",")] if args.models else list(MODEL_CONFIGS.keys())
+    model_keys = []
+    _seen = set()
+    for k in raw_keys:
+        nk = resolve_model_key(k)
+        if nk not in MODEL_CONFIGS:
+            print(f"[WARN] 未知模型 {k}（解析后 {nk}），跳过")
+            continue
+        if nk not in _seen:
+            _seen.add(nk)
+            model_keys.append(nk)
 
     results = {}
     for model_key in model_keys:
-        if model_key not in MODEL_CONFIGS:
-            print(f"[WARN] 未知模型 {model_key}，跳过")
-            continue
         config_file = MODEL_CONFIGS[model_key]
         ret = run_single_model(
             model_key,

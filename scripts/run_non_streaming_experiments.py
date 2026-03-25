@@ -29,21 +29,32 @@ from recbole.utils import (
 )
 
 
-# 模型名 -> 配置文件
+# 模型名 -> 配置文件（CLI 键与表格列名一致用 DamRec）
 MODEL_CONFIGS = {
     "GDN": "recbole/properties/quick_start_config/sequential_GDN.yaml",
     "Mo": "recbole/properties/quick_start_config/sequential_MoRec.yaml",
     "Nest": "recbole/properties/quick_start_config/sequential_NestRec.yaml",
-    "Adam": "recbole/properties/quick_start_config/sequential_DamRec.yaml",
+    "DamRec": "recbole/properties/quick_start_config/sequential_DamRec.yaml",
     "Fro": "recbole/properties/quick_start_config/sequential_FroRec.yaml",
 }
 
-# 配置文件 -> 实际模型类名
+# 旧键名兼容：与 MODEL_CONFIGS 中同一套 yaml / RecBole 类名 DamRec
+MODEL_KEY_ALIASES = {"Adam": "DamRec"}
+
+
+def resolve_model_key(key: str) -> str:
+    return MODEL_KEY_ALIASES.get(key, key)
+
+
+# 表格/CSV 列顺序（与 MODEL_CONFIGS 一致）
+MODEL_COLS_ORDER = ["GDN", "Mo", "Nest", "DamRec", "Fro"]
+
+# CLI 键 -> 实际模型类名（传给 Config model=）
 CONFIG_TO_MODEL = {
     "GDN": "GDN",
     "Mo": "MoRec",
     "Nest": "NestRec",
-    "Adam": "DamRec",
+    "DamRec": "DamRec",
     "Fro": "FroRec",
 }
 
@@ -170,7 +181,7 @@ def main():
     lines.append(f"非流式实验 (streaming_mode=False) - {dataset}")
     lines.append(f"dataset={dataset}, time={timestamp}")
     lines.append("")
-    lines.append("模型\t\t\tGDN\t\tMo\t\tNest\t\tAdam\t\tFro")
+    lines.append("模型\t\t\tGDN\t\tMo\t\tNest\t\tDamRec\t\tFro")
     lines.append("-" * 70)
 
     def fmt(v):
@@ -184,7 +195,7 @@ def main():
     test_row = "test recall@10\t"
     time_row = "time (s)\t\t"
     mem_row = "显存 (GB)\t\t"
-    for k in ["GDN", "Mo", "Nest", "Adam", "Fro"]:
+    for k in MODEL_COLS_ORDER:
         r = results.get(k)
         if r is None:
             valid_row += "N/A\t\t"
@@ -218,7 +229,7 @@ def main():
     # CSV for easy import
     with open(csv_file, "w", encoding="utf-8") as f:
         f.write("model,valid_recall@10,test_recall@10,train_time_sec,peak_mem_gb\n")
-        for k in ["GDN", "Mo", "Nest", "Adam", "Fro"]:
+        for k in MODEL_COLS_ORDER:
             r = results.get(k)
             if r is None:
                 f.write(f"{k},N/A,N/A,N/A,N/A\n")
