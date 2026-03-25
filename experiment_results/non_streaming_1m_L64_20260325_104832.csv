@@ -1,0 +1,2 @@
+model,valid_recall@10,valid_mrr@10,valid_ndcg@10,valid_hit@10,valid_precision@10,test_recall@10,test_mrr@10,test_ndcg@10,test_hit@10,test_precision@10,train_time_sec,peak_mem_gb
+DamRec,0.2949,0.1285,0.1673,0.2949,0.0295,0.2700,0.1238,0.1579,0.2700,0.0270,3659.43,3.32

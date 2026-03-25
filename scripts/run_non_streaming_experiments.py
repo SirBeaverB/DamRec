@@ -59,7 +59,19 @@ CONFIG_TO_MODEL = {
 }
 
 
-def run_single_model(model_key, config_file, dataset="ml-100k", max_seq_len=None, epochs=None, worker=None, saved=False, show_progress=False, checkpoint_dir=None):
+def run_single_model(
+    model_key,
+    config_file,
+    dataset="ml-100k",
+    max_seq_len=None,
+    epochs=None,
+    worker=None,
+    saved=False,
+    show_progress=False,
+    checkpoint_dir=None,
+    damrec_scale_max=None,
+    damrec_scale_min=None,
+):
     """运行单个模型，返回 (valid_result_dict, test_result_dict, train_time_sec, peak_mem_gb) 或 None（失败时）。
     valid_result_dict / test_result_dict 包含 recall@10, mrr@10, ndcg@10, hit@10, precision@10 等。
     model_key 若不在 CONFIG_TO_MODEL 中（如 RecBole baseline），则直接用 model_key 作为模型类名。"""
@@ -77,14 +89,25 @@ def run_single_model(model_key, config_file, dataset="ml-100k", max_seq_len=None
         config_dict["worker"] = worker
     if checkpoint_dir is not None:
         config_dict["checkpoint_dir"] = checkpoint_dir
+    if damrec_scale_max is not None:
+        config_dict["damrec_scale_max"] = damrec_scale_max
+    if damrec_scale_min is not None:
+        config_dict["damrec_scale_min"] = damrec_scale_min
 
     try:
-        config = Config(
-            model=model_name,
-            dataset=dataset,
-            config_file_list=[config_file],
-            config_dict=config_dict,
-        )
+        # RecBole 只解析形如 --key=value 的 argv；本脚本用 argparse 传的 -L/--models/--damrec-* 会触发
+        # “will not be used” 警告，但已通过 config_dict 生效。构造 Config 时清空 argv 以免误导。
+        _saved_argv = sys.argv[:]
+        sys.argv = [_saved_argv[0]]
+        try:
+            config = Config(
+                model=model_name,
+                dataset=dataset,
+                config_file_list=[config_file],
+                config_dict=config_dict,
+            )
+        finally:
+            sys.argv = _saved_argv
         init_seed(config["seed"], config["reproducibility"])
         init_logger(config)
 

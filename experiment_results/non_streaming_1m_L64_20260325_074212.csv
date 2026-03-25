@@ -1,0 +1,2 @@
+model,valid_recall@10,valid_mrr@10,valid_ndcg@10,valid_hit@10,valid_precision@10,test_recall@10,test_mrr@10,test_ndcg@10,test_hit@10,test_precision@10,train_time_sec,peak_mem_gb
+GDN,0.3132,0.1384,0.1792,0.3132,0.0313,0.2967,0.1353,0.1730,0.2967,0.0297,2315.45,2.57

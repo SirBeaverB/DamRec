@@ -12,6 +12,8 @@ damrec_eps: 1e-4
 damrec_chunk_size: 16
 damrec_chunk_use_fla: True
 use_chunk_adam: True
+damrec_scale_max: 2.0
+damrec_scale_min: ~
 enable_amp: False
 use_compile: False
 train_neg_sample_args: ~

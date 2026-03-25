@@ -18,3 +18,6 @@ damrec_chunk_size: 16
 # Chunk 时：块内 FLA 加速 + no_grad 下 instruct 影子循环，仅用于 V 的 (38)(39)（需 CUDA+flash-linear-attention）
 damrec_chunk_use_fla: True
 use_chunk_adam: False
+# FLA 路径下 s_r/s_k clamp 上下界；min 为 ~ 时用 1/max
+damrec_scale_max: 2.0
+damrec_scale_min: ~

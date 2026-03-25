@@ -17,6 +17,7 @@ Common Layers in recommender system
 
 import copy
 import math
+import os
 
 import numpy as np
 import torch
@@ -1879,6 +1880,9 @@ try:
 except ImportError:
     _FLA_AVAILABLE = False
 
+# 设置 DAMREC_DEBUG_FLA=1 时，首个前向仅 chunk0 打印 FLA 前后张量范围（定位爆炸环节）
+_DEBUG_FLA = os.environ.get("DAMREC_DEBUG_FLA", "").lower() in ("1", "true", "yes")
+
 
 def l2_norm(x, eps=1e-5):
     """L2 norm: x / sqrt(sum(x^2) + eps). Aligned with original GatedDeltaNet."""
@@ -2743,6 +2747,8 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
     """
 
     _logged = False
+    _debug_fla_logged = False
+    _debug_fla_meta_once = False
 
     def __init__(
         self,
@@ -2755,6 +2761,8 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
         damrec_eps=1e-8,
         damrec_chunk_size=16,
         use_fla_intrachunk=True,
+        damrec_scale_max=2.0,
+        damrec_scale_min=None,
     ):
         super().__init__()
         assert d_model % num_heads == 0
@@ -2765,6 +2773,14 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
         self.eps = damrec_eps
         self.chunk_size = damrec_chunk_size
         self.use_fla_intrachunk = use_fla_intrachunk
+        self.damrec_scale_max = float(damrec_scale_max) if damrec_scale_max is not None else 2.0
+        if damrec_scale_min is not None:
+            self.damrec_scale_min = float(damrec_scale_min)
+        else:
+            self.damrec_scale_min = 1.0 / self.damrec_scale_max
+        assert self.damrec_scale_min > 0 and self.damrec_scale_max >= self.damrec_scale_min, (
+            f"damrec_scale_min/max invalid: {self.damrec_scale_min}, {self.damrec_scale_max}"
+        )
 
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
@@ -2781,6 +2797,8 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
         self.ffn_up = nn.Linear(d_model, ffn_hidden)
         self.ffn_down = nn.Linear(ffn_hidden, d_model)
         self.dropout = nn.Dropout(dropout)
+        self._debug_vready_printed = False
+        self._debug_vready_post_printed = False
 
     def _intra_step(self, k, v, S, P_fixed, alpha, beta):
         """Fixed P; S = αS + β * (−(r k^T) ⊘ P)."""
@@ -2865,6 +2883,16 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
             n = start // C
             end = min(start + C, L)
             clen = end - start
+            if (
+                _DEBUG_FLA
+                and start == 0
+                and not GatedDeltaLayerChunkDamRec._debug_fla_meta_once
+            ):
+                GatedDeltaLayerChunkDamRec._debug_fla_meta_once = True
+                print(
+                    f"[DamRec FLA DEBUG] first chunk start={start} n={n} L={L} C={C} "
+                    f"use_fla={use_fla} x.is_cuda={x.is_cuda} _FLA_AVAILABLE={_FLA_AVAILABLE}"
+                )
             q_c = q[:, start:end, :, :]
             k_c = k[:, start:end, :, :]
             v_c = v[:, start:end, :, :]
@@ -2876,28 +2904,73 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
             if use_fla:
                 Vr = V_r.clamp(min=0.0)
                 Vk = V_k.clamp(min=0.0)
-                # V 不足时关闭吸收；就绪后 s_* 限制在 [0.1,10]，单维最多约 10× 缩放，乘积最多约 100×，避免再出现 CE 爆炸
+                # V 不足时关闭吸收；就绪后 s_* 限制在 [damrec_scale_min, damrec_scale_max]（config 可调）
                 v_ready = (Vr.abs().max() > 1e-4).item() and (Vk.abs().max() > 1e-4).item()
+                smin, smax = self.damrec_scale_min, self.damrec_scale_max
+                inv_lo, inv_hi = 1.0 / smax, 1.0 / smin
+                den_floor = smin * smin
                 if v_ready:
                     sqrt_eps = max(self.eps ** 0.5, 1e-4)
                     s_r = 1.0 / (torch.sqrt(Vr / bias_corr) + sqrt_eps)
                     s_k = 1.0 / (torch.sqrt(Vk / bias_corr) + sqrt_eps)
-                    s_r = s_r.clamp(min=0.1, max=10.0)
-                    s_k = s_k.clamp(min=0.1, max=10.0)
+                    s_r = s_r.clamp(min=smin, max=smax)
+                    s_k = s_k.clamp(min=smin, max=smax)
                 else:
                     s_r = torch.ones_like(Vr)
                     s_k = torch.ones_like(Vk)
                 S_scaled = S_start * s_r.unsqueeze(-1) * s_k.unsqueeze(-2)
                 S_scaled = torch.nan_to_num(S_scaled, nan=0.0, posinf=0.0, neginf=0.0).clamp(
-                    min=-100.0, max=100.0
+                    min=-10.0, max=10.0
                 )
                 k_scaled = k_c * s_k.unsqueeze(1)
                 v_scaled = v_c * s_r.unsqueeze(1)
-                sk_u = s_k.unsqueeze(1).clamp(min=0.1, max=10.0)
+                sk_u = s_k.unsqueeze(1).clamp(min=smin, max=smax)
                 q_adj = q_c / sk_u
                 q_adj = torch.nan_to_num(q_adj, nan=0.0, posinf=0.0, neginf=0.0).clamp(
                     min=-20.0, max=20.0
                 )
+
+                if (
+                    _DEBUG_FLA
+                    and v_ready
+                    and not self._debug_vready_printed
+                ):
+                    self._debug_vready_printed = True
+                    with torch.no_grad():
+                        print(f"[DEBUG FIRST v_ready=True] chunk start={start} n={n}")
+                        print(
+                            f"  V_r: min={V_r.min().item():.6e} max={V_r.max().item():.6e} "
+                            f"absmax={V_r.abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  V_k: min={V_k.min().item():.6e} max={V_k.max().item():.6e} "
+                            f"absmax={V_k.abs().max().item():.6e}"
+                        )
+                        print(f"  bias_corr={bias_corr:.6e}")
+                        print(
+                            f"  V_r/bias_corr: max={(V_r / bias_corr).abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  sqrt(V_r/bc): max={torch.sqrt((Vr / bias_corr).clamp(min=0)).abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  s_r: min={s_r.min().item():.6e} max={s_r.max().item():.6e}"
+                        )
+                        print(
+                            f"  s_k: min={s_k.min().item():.6e} max={s_k.max().item():.6e}"
+                        )
+                        print(
+                            f"  S_start absmax={S_start.abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  S_scaled absmax={S_scaled.abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  k_scaled absmax={k_scaled.abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  v_scaled absmax={v_scaled.abs().max().item():.6e}"
+                        )
 
                 mask_H = mask_c.view(B, clen, 1, 1).to(k_scaled.dtype)
                 # 与 GatedDeltaLayer FLA 一致：占位处 k,v 用小常数；β 勿用 1e-8（FLA 对 (I+A)^{-1} 反向会病态致 NaN）
@@ -2905,6 +2978,34 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
                 k_f = torch.where(mask_H.expand_as(k_scaled).bool(), k_scaled, torch.full_like(k_scaled, eps_kv))
                 v_f = torch.where(mask_H.expand_as(v_scaled).bool(), v_scaled, torch.full_like(v_scaled, eps_kv))
                 q_in = torch.where(mask_H.expand_as(q_adj).bool(), q_adj, torch.zeros_like(q_adj))
+                if (
+                    _DEBUG_FLA
+                    and start == 0
+                    and not GatedDeltaLayerChunkDamRec._debug_fla_logged
+                ):
+                    with torch.no_grad():
+                        print(
+                            f"[DamRec FLA DEBUG chunk start={start} n={n}] v_ready={v_ready} "
+                            f"Vr_absmax={Vr.abs().max().item():.6e} Vk_absmax={Vk.abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  s_r: min={s_r.min().item():.4f} max={s_r.max().item():.4f} | "
+                            f"s_k: min={s_k.min().item():.4f} max={s_k.max().item():.4f}"
+                        )
+                        print(
+                            f"  S_start: min={S_start.min().item():.4f} max={S_start.max().item():.4f} "
+                            f"absmax={S_start.abs().max().item():.4f}"
+                        )
+                        print(
+                            f"  S_scaled (after clamp): min={S_scaled.min().item():.4f} max={S_scaled.max().item():.4f} "
+                            f"absmax={S_scaled.abs().max().item():.4f}"
+                        )
+                        print(
+                            f"  k_scaled absmax={k_scaled.abs().max().item():.4f} | "
+                            f"v_scaled absmax={v_scaled.abs().max().item():.4f} | "
+                            f"q_adj absmax={q_adj.abs().max().item():.4f} | "
+                            f"q_in absmax={q_in.abs().max().item():.4f}"
+                        )
                 ag = alpha_gates[:, start:end, :]
                 bg = beta_gates[:, start:end, :]
                 ag = torch.where(mask_c.unsqueeze(-1), ag, torch.ones_like(ag))
@@ -2962,11 +3063,73 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
                     and o_fla.shape[2] == clen
                 ):
                     o_fla = o_fla.permute(0, 2, 1, 3).contiguous()
-                # s_*∈[0.1,10] ⇒ den∈[0.01,100]
-                den = (s_r.unsqueeze(-1) * s_k.unsqueeze(-2)).clamp(min=0.01)
+                if (
+                    _DEBUG_FLA
+                    and self._debug_vready_printed
+                    and not self._debug_vready_post_printed
+                ):
+                    self._debug_vready_post_printed = True
+                    with torch.no_grad():
+                        den_vr = (s_r.unsqueeze(-1) * s_k.unsqueeze(-2)).clamp(
+                            min=1e-12
+                        )
+                        S_back_vr = S_end / den_vr
+                        print(
+                            f"  [FIRST v_ready=True after FLA] S_end absmax={S_end.abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  o_fla absmax={o_fla.abs().max().item():.6e}"
+                        )
+                        print(
+                            f"  den (min=1e-12): min={den_vr.min().item():.6e} max={den_vr.max().item():.6e}"
+                        )
+                        print(
+                            f"  S_back absmax={S_back_vr.abs().max().item():.6e}"
+                        )
+                        o_check = o_fla.reshape(B, clen, self.num_heads, self.d_head)
+                        o_check = o_check * (1.0 / s_r).unsqueeze(1).clamp(
+                            min=inv_lo, max=inv_hi
+                        )
+                        print(
+                            f"  o after 1/s_r absmax={o_check.abs().max().item():.6e}"
+                        )
+                if (
+                    _DEBUG_FLA
+                    and start == 0
+                    and not GatedDeltaLayerChunkDamRec._debug_fla_logged
+                ):
+                    with torch.no_grad():
+                        print(
+                            f"  [after FLA] o_fla absmax={o_fla.abs().max().item():.4f} | "
+                            f"S_end absmax={S_end.abs().max().item():.4f}"
+                        )
+                # den = s_r s_k，下界 smin² 与 s_* 的 clamp 一致（config 可调）
+                den = (s_r.unsqueeze(-1) * s_k.unsqueeze(-2)).clamp(min=den_floor)
+                if (
+                    _DEBUG_FLA
+                    and start == 0
+                    and not GatedDeltaLayerChunkDamRec._debug_fla_logged
+                ):
+                    with torch.no_grad():
+                        S_back = S_end / den
+                        print(
+                            f"  S_back (S_end/den inverse) absmax={S_back.abs().max().item():.4f} "
+                            f"den absmax={den.abs().max().item():.4f}"
+                        )
                 S = torch.nan_to_num(S_end / den, nan=0.0, posinf=0.0, neginf=0.0)
                 o_nd = o_fla.reshape(B, clen, self.num_heads, self.d_head)
-                o_nd = o_nd * (1.0 / s_r).unsqueeze(1).clamp(min=0.1, max=10.0)
+                o_nd = o_nd * (1.0 / s_r).unsqueeze(1).clamp(min=inv_lo, max=inv_hi)
+                if (
+                    _DEBUG_FLA
+                    and start == 0
+                    and not GatedDeltaLayerChunkDamRec._debug_fla_logged
+                ):
+                    with torch.no_grad():
+                        print(
+                            f"  o_nd after ×(1/s_r) absmax={o_nd.abs().max().item():.4f} | "
+                            f"S (nan_to_num) absmax={S.abs().max().item():.4f}"
+                        )
+                    GatedDeltaLayerChunkDamRec._debug_fla_logged = True
                 o_fla = torch.nan_to_num(o_nd.reshape(B, clen, d), nan=0.0, posinf=0.0, neginf=0.0)
                 for t in range(clen):
                     outputs.append(o_fla[:, t, :])

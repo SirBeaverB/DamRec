@@ -1,0 +1,15 @@
+=== DamRec scale search (dual GPU, batched) ===
+start_utc=2026-03-25T08:21:09Z
+ROOT=/root/DamRec
+LOGDIR=/root/DamRec/logs/damrec_scale_4h_20260325_082109
+EPOCHS=150  L=64
+CUDA_VISIBLE_DEVICES (host): 0
+
+--- wave 1 start 2026-03-25T08:21:09Z ---
+--- wave 1 end 2026-03-25T09:46:09Z ---
+
+--- wave 2 start 2026-03-25T09:46:09Z ---
+--- wave 2 end 2026-03-25T11:34:22Z ---
+
+end_utc=2026-03-25T11:34:22Z
+All waves finished. Logs: /root/DamRec/logs/damrec_scale_4h_20260325_082109

@@ -3,7 +3,8 @@
 """
 非流式实验脚本 - ml-1m
 依次运行 GDN、MoRec、NestRec、DamRec、FroRec，记录 valid/test 各项指标和训练时间。
-配置: dataset=ml-1m, L=128(默认) 或 L=64, epochs=150, worker=4
+配置: dataset=ml-1m, L=128(默认) 或 L=64, worker=4；--epochs 为最大轮数（默认 150），
+      实际训练由 yaml 中 stopping_step + valid 指标早停（见 sequential_DamRec.yaml），通常跑不满 epochs。
 
 输出: recall@10 / mrr@10 / ndcg@10 / hit@10 / precision@10（valid+test）、训练时间(s)、峰值显存(GB)，
       写入 experiment_results/non_streaming_1m_L{L}_*.txt 与同名 .csv
@@ -13,6 +14,9 @@
   python scripts/run_non_streaming_experiments_1m.py --max_seq_len 64        # L=64
   python scripts/run_non_streaming_experiments_1m.py -L 64 --models GDN DamRec   # 只跑 GDN 与 DamRec（Adam 为旧别名）
   python scripts/run_non_streaming_experiments_1m.py -L 64 2>&1 | tee logs/ml1m_l64.txt   # 同时保存终端日志
+  python scripts/run_non_streaming_experiments_1m.py -L 64 --models DamRec --damrec-scale-max 3 --damrec-scale-min 0.3
+  bash scripts/run_damrec_scale_search.sh   # 双卡并行扫 scale（见脚本内 CUDA 与参数）
+  bash scripts/run_damrec_scale_search_4h_dual_gpu.sh   # 双卡分波 + 独立日志（时长主要由早停决定，见脚本说明）
 """
 
 import argparse
@@ -47,11 +51,32 @@ def main():
         help="只跑指定模型键，如: GDN DamRec。默认跑全部。可选: GDN Mo Nest DamRec Fro（Adam 为 DamRec 别名）",
     )
     parser.add_argument("--saved", action="store_true", help="保存 checkpoint")
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=150,
+        metavar="N",
+        help="最大训练轮数（上界），默认 150；RecBole 仍按 yaml 的 stopping_step 做验证早停",
+    )
+    parser.add_argument(
+        "--damrec-scale-max",
+        type=float,
+        default=None,
+        metavar="S",
+        help="覆盖 DamRec FLA 路径 s_r/s_k 上界（仅 DamRec；默认读 yaml）",
+    )
+    parser.add_argument(
+        "--damrec-scale-min",
+        type=float,
+        default=None,
+        metavar="S",
+        help="覆盖 DamRec FLA 路径 s_r/s_k 下界（仅 DamRec；默认读 yaml 或 1/max）",
+    )
     args = parser.parse_args()
 
     dataset = "ml-1m"
     max_seq_len = args.max_seq_len
-    epochs = 150
+    epochs = args.epochs
     worker = 4
     show_progress = True
     saved = args.saved
@@ -89,6 +114,8 @@ def main():
             saved=saved,
             show_progress=show_progress,
             checkpoint_dir=checkpoint_dir,
+            damrec_scale_max=args.damrec_scale_max,
+            damrec_scale_min=args.damrec_scale_min,
         )
         results[model_key] = ret
 

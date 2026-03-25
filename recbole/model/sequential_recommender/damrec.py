@@ -46,6 +46,10 @@ class DamRec(SequentialRecommender):
         self.damrec_chunk_use_fla = _cuf if _cuf is not None else True
         use_chunk = config["use_chunk_adam"] if config["use_chunk_adam"] is not None else False
         self.use_chunk_adam = use_chunk
+        _smax = config["damrec_scale_max"]
+        self.damrec_scale_max = _smax if _smax is not None else 2.0
+        _smin = config["damrec_scale_min"]
+        self.damrec_scale_min = _smin if _smin is not None else (1.0 / self.damrec_scale_max)
 
         self.item_embedding = nn.Embedding(
             self.n_items, self.embedding_size, padding_idx=0
@@ -65,6 +69,8 @@ class DamRec(SequentialRecommender):
         if self.use_chunk_adam:
             layer_kw["damrec_chunk_size"] = self.damrec_chunk_size
             layer_kw["use_fla_intrachunk"] = self.damrec_chunk_use_fla
+            layer_kw["damrec_scale_max"] = self.damrec_scale_max
+            layer_kw["damrec_scale_min"] = self.damrec_scale_min
 
         self.layers = nn.ModuleList([layer_cls(**layer_kw) for _ in range(self.n_layers)])
         self.output_proj = nn.Linear(self.embedding_size, self.embedding_size)
