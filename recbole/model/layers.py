@@ -2299,7 +2299,7 @@ class GatedDeltaLayerNesterov(nn.Module):
 
 class GatedDeltaLayerDamRec(nn.Module):
     r"""DamRec token-level layer per instruct.md §5–6, §11.
-    S̃=αS, r=S̃k−v, V_r/V_k rank-1 EMA of (r⊙r),(k⊙k), P=√(V_r V_k^T / (1−ρ^t)+ε),
+    S̃=αS, r=S̃k−v, V_r/V_k rank-1 EMA of (r⊙r),(k⊙k), P=√(V_r V_k^T / (1−ρ^t))+ε,
     S=αS+β((−r)k^T ⊘ P). Second-moment updates are stop-gradient."""
 
     def __init__(
@@ -2329,6 +2329,7 @@ class GatedDeltaLayerDamRec(nn.Module):
         self.alpha_gate = nn.Linear(d_model, 1)
         self.beta_gate = nn.Linear(d_model, 1)
         self.out_gate = nn.Linear(d_model, 1)
+        self.out_norm = nn.GroupNorm(num_groups=num_heads, num_channels=d_model)
 
         ffn_hidden = d_model * ffn_ratio
         self.ffn_gate = nn.Linear(d_model, ffn_hidden)
@@ -2348,10 +2349,10 @@ class GatedDeltaLayerDamRec(nn.Module):
             V_k_new = self.rho * V_k + (1.0 - self.rho) * kk
         bc = (1.0 - torch.pow(self.rho, step_1based)).clamp(min=1e-8)
         bc_b = bc.view(-1, 1, 1, 1)
-        # P[i,j] = sqrt(V_r[i]*V_k[j]/bc + ε), broadcast [B,H,d_h,d_h]
-        P = torch.sqrt(
-            (V_r_new.unsqueeze(-1) * V_k_new.unsqueeze(-2)) / bc_b + self.eps
-        ).clamp(min=1e-6)
+        # P[i,j] = sqrt(V_r[i]*V_k[j]/bc) + ε, broadcast [B,H,d_h,d_h] (paper eq. 25)
+        P = (torch.sqrt(
+            ((V_r_new.unsqueeze(-1) * V_k_new.unsqueeze(-2)) / bc_b).clamp(min=0.0)
+        ) + self.eps).clamp(min=1e-6)
         G = torch.einsum("bhi,bhj->bhij", r, k)
         update_scaled = G / P
         update_scaled = torch.nan_to_num(update_scaled, nan=0.0, posinf=0.0, neginf=0.0)
@@ -2438,6 +2439,10 @@ class GatedDeltaLayerDamRec(nn.Module):
             outputs.append(out_t)
 
         out_seq = torch.stack(outputs, dim=2).permute(0, 2, 1, 3).reshape(B, L, d)
+        # Paper §3.1 hidden-state regularization: per-token GroupNorm on readout (num_heads groups)
+        out_seq = self.out_norm(
+            out_seq.reshape(-1, d).unsqueeze(-1)
+        ).squeeze(-1).reshape(B, L, d)
         out_seq = out_seq * out_gates + x
         ffn = self.ffn_gate(out_seq) * fn.silu(self.ffn_up(out_seq))
         out_seq = out_seq + self.dropout(self.ffn_down(ffn))
@@ -2791,6 +2796,7 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
         self.alpha_gate = nn.Linear(d_model, 1)
         self.beta_gate = nn.Linear(d_model, 1)
         self.out_gate = nn.Linear(d_model, 1)
+        self.out_norm = nn.GroupNorm(num_groups=num_heads, num_channels=d_model)
 
         ffn_hidden = d_model * ffn_ratio
         self.ffn_gate = nn.Linear(d_model, ffn_hidden)
@@ -3153,9 +3159,10 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
                         for t in range(clen)
                     ]
             else:
-                P = torch.sqrt(
-                    (V_r.unsqueeze(-1) * V_k.unsqueeze(-2)) / bias_corr + self.eps
-                ).clamp(min=1e-6)
+                # P[i,j] = sqrt(V_r[i]*V_k[j]/bc) + ε (paper eq. 25)
+                P = (torch.sqrt(
+                    ((V_r.unsqueeze(-1) * V_k.unsqueeze(-2)) / bias_corr).clamp(min=0.0)
+                ) + self.eps).clamp(min=1e-6)
                 r_list = []
                 k_list = []
                 for t in range(clen):
@@ -3186,6 +3193,10 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
 
         final_step = base_step + float(num_chunks)
         out_seq = torch.stack(outputs, dim=1).reshape(B, L, d)
+        # Paper §3.1 hidden-state regularization: per-token GroupNorm on readout (num_heads groups)
+        out_seq = self.out_norm(
+            out_seq.reshape(-1, d).unsqueeze(-1)
+        ).squeeze(-1).reshape(B, L, d)
         out_seq = out_seq * out_gates + x
         ffn = self.ffn_gate(out_seq) * fn.silu(self.ffn_up(out_seq))
         out_seq = out_seq + self.dropout(self.ffn_down(ffn))
