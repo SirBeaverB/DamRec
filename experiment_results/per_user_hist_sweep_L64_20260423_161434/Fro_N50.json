@@ -1,0 +1,26 @@
+{
+  "model": "Fro",
+  "model_name": "FroRec",
+  "N": 50,
+  "dataset": "ml-1m-per50",
+  "max_seq_len": 64,
+  "epochs": 150,
+  "ckp_dir": "/root/DamRec/saved/per_user_hist_sweep_N50_L64",
+  "valid_result": {
+    "recall@10": 0.2311,
+    "mrr@10": 0.0998,
+    "ndcg@10": 0.1304,
+    "hit@10": 0.2311,
+    "precision@10": 0.0231
+  },
+  "test_result": {
+    "recall@10": 0.2114,
+    "mrr@10": 0.0927,
+    "ndcg@10": 0.1205,
+    "hit@10": 0.2114,
+    "precision@10": 0.0211
+  },
+  "train_time_sec": 1269.5815260410309,
+  "peak_mem_gb": 2.806051731109619,
+  "seed": 2020
+}

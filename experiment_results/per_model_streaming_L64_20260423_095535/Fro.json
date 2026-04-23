@@ -1,0 +1,25 @@
+{
+  "model": "Fro",
+  "model_name": "FroRec",
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_L64",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_L64/FroRec-Apr-23-2026_11-37-09.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_L64/user_states_FroRec.pt",
+  "result": {
+    "recall@10": 0.01,
+    "mrr@10": 0.0029,
+    "ndcg@10": 0.0046,
+    "hit@10": 0.01,
+    "precision@10": 0.001
+  },
+  "t_sec": 47.87186421779916,
+  "mem_gb": 2.942254066467285,
+  "pretrain_epochs": 150,
+  "pretrain_sec": 2057.5919190798886,
+  "dump_sec": 153.45670632296242,
+  "seed": 2020,
+  "stages_run": {
+    "pretrain": true,
+    "dump": true,
+    "t2t": true
+  }
+}

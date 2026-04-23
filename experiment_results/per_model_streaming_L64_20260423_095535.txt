@@ -1,0 +1,73 @@
+==========================================================================================
+Per-Model Pretrain + Streaming T2T on ml-1m (80/20 temporal split)
+==========================================================================================
+
+[实验情景]
+  ml-1m 按 timestamp 全局排序后切 80/20：前 80% 作 pretrain，后 20% 作 streaming T2T。
+  每个模型独立在 pretrain 上跑完整预训练（非嫁接，所有独有参数都训），
+  预训练结束后 replay 一次 pretrain 导出 per-user 内部状态 (S, M, V) 到 user_states.pt，
+  再进入 T2T 阶段：模型加载 ckp + user_states，按真实时间顺序处理后 20% 交互。
+
+[评估协议] Prequential streaming (Gama et al., 2009)
+  每个 user 的 t2t 尾部 10% 交互被标为 test 点。流式迭代时：
+    1) 到达 test 点先 full_sort_predict → 记录 Recall/NDCG/MRR
+    2) 整个 batch（含 test 点）参与 loss.backward() → 模拟在线反馈
+    3) 交互加入 user_history；模型的 per-user S/M/V 持续演化，不重置
+  每 user 约 3 个 test 点，总 test 点 ~18K，所以 Recall@10 绝对值约在 0.01 量级。
+
+[模型对照]
+  GDN  = Gated Delta Net（基线，前向 ≡ 在线 SGD）
+  Mo   = MoRec（动量式前向更新）
+  Nest = NestRec（Nesterov 动量）
+  Adam = DamRec（Adam 式，秩一分解 V_r⊙V_k^T）
+  Fro  = FroRec（F-Adam，V 降维为 Frobenius 标量）
+
+[超参数]
+  max_seq_len L         = 64
+  pretrain_epochs       = 150  (实际受 stopping_step=10 早停控制)
+  pretrain_batch_size   = 2048 (default), lr = 1e-3 (yaml default)
+  t2t_lr                = 0.0001  (流式阶段)
+  t2t_epochs            = 1 (prequential 单次 pass)
+  t2t_test_ratio        = 0.1  (每 user 尾部 10% 为 test)
+  random seed           = 2020  (RecBole default; 单 seed 单次运行)
+
+[运行信息]
+  run_id       = 20260423_095535
+  work_dir     = /root/DamRec/experiment_results/per_model_streaming_L64_20260423_095535
+  models       = ['GDN', 'Mo', 'Nest', 'Adam', 'Fro']
+  skip/force   = none
+
+------------------------------------------------------------------------------------------
+TEST (streaming T2T)  —  Recall / NDCG / MRR @10, 越大越好
+------------------------------------------------------------------------------------------
+Metric        GDN         Mo          Nest        Adam        Fro         
+--------------------------------------------------------------------------
+recall@10     0.0101      0.0108      0.0099      0.0108      0.0100      
+ndcg@10       0.0047      0.0051      0.0047      0.0049      0.0046      
+mrr@10        0.0031      0.0035      0.0031      0.0031      0.0029      
+
+------------------------------------------------------------------------------------------
+训练耗时 / 流式推断耗时 / 峰值显存
+------------------------------------------------------------------------------------------
+Metric        GDN         Mo          Nest        Adam        Fro         
+--------------------------------------------------------------------------
+pretrain(s)   1835        3498        3719        2988        2058        
+t2t(s)        37          40          41          77          48          
+peak_mem(GB)  2.69        2.84        2.84        3.49        2.94        
+
+------------------------------------------------------------------------------------------
+产物路径（复现 / 断点续跑用）
+------------------------------------------------------------------------------------------
+  GDN     ckp   : /root/DamRec/saved/per_model_pretrain_L64/GDN-Apr-23-2026_09-56-07.pth
+          states: /root/DamRec/saved/per_model_pretrain_L64/user_states_GDN.pt
+  Mo      ckp   : /root/DamRec/saved/per_model_pretrain_L64/MoRec-Apr-23-2026_09-56-08.pth
+          states: /root/DamRec/saved/per_model_pretrain_L64/user_states_MoRec.pt
+  Nest    ckp   : /root/DamRec/saved/per_model_pretrain_L64/NestRec-Apr-23-2026_10-30-47.pth
+          states: /root/DamRec/saved/per_model_pretrain_L64/user_states_NestRec.pt
+  Adam    ckp   : /root/DamRec/saved/per_model_pretrain_L64/DamRec-Apr-23-2026_10-58-37.pth
+          states: /root/DamRec/saved/per_model_pretrain_L64/user_states_DamRec.pt
+  Fro     ckp   : /root/DamRec/saved/per_model_pretrain_L64/FroRec-Apr-23-2026_11-37-09.pth
+          states: /root/DamRec/saved/per_model_pretrain_L64/user_states_FroRec.pt
+
+[注] 本次为单 seed 单次运行的可行性验证结果；正式论文实验需 3~5 seed 取均值±std。
+==========================================================================================

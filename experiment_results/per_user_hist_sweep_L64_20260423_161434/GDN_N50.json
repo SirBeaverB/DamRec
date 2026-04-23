@@ -1,0 +1,26 @@
+{
+  "model": "GDN",
+  "model_name": "GDN",
+  "N": 50,
+  "dataset": "ml-1m-per50",
+  "max_seq_len": 64,
+  "epochs": 150,
+  "ckp_dir": "/root/DamRec/saved/per_user_hist_sweep_N50_L64",
+  "valid_result": {
+    "recall@10": 0.2275,
+    "mrr@10": 0.0979,
+    "ndcg@10": 0.1281,
+    "hit@10": 0.2275,
+    "precision@10": 0.0227
+  },
+  "test_result": {
+    "recall@10": 0.2152,
+    "mrr@10": 0.0924,
+    "ndcg@10": 0.121,
+    "hit@10": 0.2152,
+    "precision@10": 0.0215
+  },
+  "train_time_sec": 676.7674131393433,
+  "peak_mem_gb": 2.571925640106201,
+  "seed": 2020
+}

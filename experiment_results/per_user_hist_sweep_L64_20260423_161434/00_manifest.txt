@@ -1,0 +1,13 @@
+=== Per-user history sweep (ml-1m) ===
+start (local)  = 2026-04-23T16:14:34.091778
+work_dir      = /root/DamRec/experiment_results/per_user_hist_sweep_L64_20260423_161434
+run_id        = 20260423_161434
+argv          = ['scripts/run_per_user_history_sweep_1m.py']
+host CUDA_VISIBLE_DEVICES = (unset)
+slot GPUs (per worker)  = ['0', '1']
+Ns            = [10, 50, 100]
+models        = ['GDN', 'Adam', 'Fro']
+L, epochs, n_slots = 64, 150, 2
+per-task logs: /root/DamRec/experiment_results/per_user_hist_sweep_L64_20260423_161434/<MODEL>_N<N>.log
+orchestrate log: /root/DamRec/experiment_results/per_user_hist_sweep_L64_20260423_161434/orchestrate.log
+summary txt/csv: per_user_hist_sweep_L64_20260423_161434.(txt|csv) under /root/DamRec/experiment_results

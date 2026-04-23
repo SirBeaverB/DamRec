@@ -18,6 +18,8 @@ DamRec 的核心创新灵感来源于序列建模与最优化理论之间深层�
 
 loss目前算的是总值，有些虚高，除batchsize之后是看上去比较正常的值。
 
+独立预训练的结果并不好，
+
 
 ## plan
 
@@ -60,6 +62,18 @@ loss目前算的是总值，有些虚高，除batchsize之后是看上去比较�
 | `python scripts/run_non_streaming_experiments_1m.py -L 64` | ml-1m，L=64，五模型 |
 | `python scripts/run_non_streaming_experiments_1m.py -L 64 --saved` | 同上，并保存 checkpoint |
 | `python scripts/run_baseline_experiments_1m.py` | SASRec、LinRec、GRU4Rec、LightSANs（与 non_streaming 同配置） |
+
+**Per-user 历史长度扫描（ml-1m，非流式 leave-one-out）**：将每用户交互截断为按时间**最近 N 条**（默认 N=10/50/100），跑 **GDN / DamRec（CLI 名 Adam）/ FroRec（Fro）**；默认**双卡并行**（`--n_gpus 2`）。**跑完后终端即打印汇总表**，并写出结果文件。
+
+与下一节「**二、T2T 流式**」**不是同一设定**：这里**不做** 80/20 时间划分、**不**开 `streaming_t2t` / prequential 流式评估；而是 RecBole 常规 **非流式**训练（`streaming_mode: False`，可 shuffle），每 user **留一法**（倒数第 2 条 valid、最后 1 条 test）。截断 N 仅表示在**离线建表**时每位用户只保留最近 N 条交互，用来研究「历史变短」对非流式指标的影响；若要做**流式**短历史，需另改数据与 `streaming_*` 配置，本脚本未覆盖。
+
+| 命令 | 说明 |
+|------|------|
+| `python scripts/run_per_user_history_sweep_1m.py` | 上表实验一次性跑完；得到 `experiment_results/per_user_hist_sweep_L{L}_{timestamp}.txt` 与同名 `.csv`（含 TEST/VALID 指标与相对 GDN 的 Δ%；默认 L=64） |
+| `python scripts/run_per_user_history_sweep_1m.py --n_gpus 1` | 单卡顺序 |
+| `python scripts/run_per_user_history_sweep_1m.py -L 64 --Ns 10,50 --models GDN,Adam` | 自定义 N 与模型子集（逗号分隔） |
+
+中间过程与子进程日志在 `experiment_results/per_user_hist_sweep_L{L}_{timestamp}/` 下（`00_manifest.txt`、`orchestrate.log`、各 `{Model}_N{N}.log`）。
 
 ---
 
@@ -126,6 +140,204 @@ python scripts/run_gdn_pretrain_t2t_unified.py --ckp saved/GDN-xxx.pth
 # 指定 L=64
 python scripts/run_gdn_pretrain_t2t_unified.py -L 64
 ```
+
+#### 场景 G：每模型独立预训练 + 独立 state_dump + 流式 T2T（**双卡并行，推荐用于正式对比**）
+
+与场景 C/F 的区别：
+- **不嫁接**：五模型各自完整预训练 150 epoch，MoRec/NestRec/DamRec/FroRec 的独有参数（如 DamRec 的 V_r/V_k 投影层）不再是随机初始化。
+- **强制 dump_state**：每个模型预训练完立刻导出**自己**的 `user_states_{MODEL}.pt`；T2T 阶段 per-user 内部状态 (S, M, V) 以预训练末态为起点，不从零吸收。
+- **双 GPU 并行**：每个模型独占一张卡跑完整流水线；5 个模型在 2 卡上排两波，总耗时约 2.5~3h（L=64）。
+
+```bash
+# 前置：首次运行需先划分数据
+python scripts/prepare_ml1m_80_20_split.py
+
+# 标准命令（默认 2 GPU, L=64, pretrain 150 ep）
+python scripts/run_per_model_pretrain_t2t_1m.py
+
+# 只跑部分模型（快速验证）
+python scripts/run_per_model_pretrain_t2t_1m.py --models Adam,Fro
+
+# 单卡顺序跑
+python scripts/run_per_model_pretrain_t2t_1m.py --n_gpus 1
+
+# smoke test（调小 epochs 验证管线）
+python scripts/run_per_model_pretrain_t2t_1m.py --models GDN --epochs 5
+
+# 断点续跑：ckp 已有，只重跑 T2T（调流式 lr 扫参用）
+python scripts/run_per_model_pretrain_t2t_1m.py --skip_pretrain --t2t_lr 5e-5
+
+# 断点续跑：ckp + user_states 都已有，只重新评估
+python scripts/run_per_model_pretrain_t2t_1m.py --skip_pretrain --skip_dump
+
+# 单模型调试（worker 模式，直接锁 GPU、输出到终端）
+CUDA_VISIBLE_DEVICES=0 python scripts/run_per_model_pretrain_t2t_1m.py \
+    --worker --model Adam --out_json /tmp/adam.json --show_progress
+```
+
+**产物**：
+- `saved/per_model_pretrain_L64/{MODEL}-*.pth`（5 个 checkpoint）
+- `saved/per_model_pretrain_L64/user_states_{MODEL}.pt`（5 份 per-user 状态）
+- `experiment_results/per_model_streaming_L64_{timestamp}.txt` / `.csv`（汇总表 + 含抬头说明）
+- `experiment_results/per_model_streaming_L64_{timestamp}/{MODEL}.log`（单模型日志）
+- `experiment_results/per_model_streaming_L64_{timestamp}/{MODEL}.json`（单模型结果 JSON）
+
+**注意**：
+- 单模型占用显存约 3GB（DamRec 最高），双卡并行各自独立，不会相互挤占。
+- `--show_progress` 在双卡并行下会导致 tqdm 日志穿插，调试时再开。
+- 输出的 TXT 为单 seed feasibility 结果；正式论文需 3~5 seed 批量聚合（CSV 列已预留 `seed` 字段）。
+
+##### 场景 G 数据如何被使用（数据流详解）
+
+**Step 0：数据集划分（一次性离线做）**
+`scripts/prepare_ml1m_80_20_split.py` 把 `ml-1m.inter` 按 `timestamp` 全局排序，切成：
+
+| 子集文件 | 内容 | 用途 |
+|---|---|---|
+| `ml-1m-pretrain.inter` | 前 80% 真实交互 + 占位行 | Step 1 预训练 & Step 2 state dump |
+| `ml-1m-t2t.inter` | 后 20% 真实交互 + 占位行 | Step 3 流式 T2T（含 valid/test） |
+
+> 占位行（rating=0）只是为了让两子集的 user/item 词表完全对齐（避免 RecBole 的 `pd.factorize` 在两子集里给同一 token 分配不同内部 ID），不进入任何真实训练信号。
+
+**Step 1：独立预训练（`ml-1m-pretrain`）**
+- 训练集：前 80%（普通 RecBole 非流式训练，leave-one-out 划分 valid/test）
+- `streaming_mode=False`，150 epochs（受 `stopping_step=10` 早停）
+- 五个模型各自训练 → 5 个独立 checkpoint：`saved/per_model_pretrain_L64/{MODEL}-*.pth`
+- **关键：不嫁接**。MoRec/NestRec/DamRec/FroRec 的独有参数（如 DamRec 的 `V_r/V_k` 投影层）在这一步被**实际训练**，不再是随机初始化。
+
+**Step 2：State Dump（流式预热）**
+- 读刚存的 checkpoint，按 `(user_id, timestamp)` 严格排序遍历**整个** `ml-1m-pretrain`，对每个 user 做一次 `forward_with_streaming`，捕获该 user 在"预训练末态"时的 per-user 内部状态（S, M, V 等），dump 成 `saved/per_model_pretrain_L64/user_states_{MODEL}.pt`。
+- **关键：每个模型导出自己的状态**，不共用。DamRec 的 V 就用 DamRec 模型 replay 得到；F-Adam 的标量 V 就用 FroRec 得到。
+- 这一步不算模型效果，只是把预训练学到的 per-user 历史"物化"出来，供 Step 3 作为起点。
+
+**Step 3：流式 T2T（`ml-1m-t2t`）**
+启动时三份东西先加载进内存：
+
+| 加载内容 | 来源 | 作用 |
+|---|---|---|
+| `model.load_state_dict(ckp)` | Step 1 的 `.pth` | 模型 trainable 参数 |
+| `model._streaming_state = load(user_states_{MODEL}.pt)` | Step 2 的 `.pt` | per-user S/M/V 内部状态 |
+| `initial_user_history = read(ml-1m-pretrain.inter)` | 前 80% 原始数据 | per-user 历史 item 序列 |
+
+然后构建 timeline：对 `ml-1m-t2t` 里的全部 (user, item) 按 `timestamp` 全局排序；对每个 user 在 t2t 内的交互，标其**尾部 10%** 为 test 点（`streaming_test_ratio=0.1`）。
+
+进入流式循环（`epochs=1`，按时间顺序单次扫过）。每 batch（256 条交互）做：
+
+```
+for batch in timeline:                              # 严格时间顺序，不 shuffle
+    if batch 里有 is_test=True 的样本:
+        model.eval()
+        scores = model.full_sort_predict(batch)    # 用当前 user_history 预测
+        记录这些 test 点的 Recall/NDCG/MRR @10
+        model.train()
+
+    # 不管 test 与否，整个 batch 都参与 loss.backward()
+    # （prequential 协议：预测完就用真实反馈更新模型）
+    loss = model.calculate_loss(batch)
+    loss.backward(); optimizer.step()              # t2t_lr=1e-4
+
+    # batch 处理完后：
+    # 1) 每条交互 append 到对应 user 的 user_history（下次看到此 user 序列更长）
+    # 2) _streaming_state[uid] 已在 forward 里被更新（持续演化，永不重置）
+```
+
+**Step 4：评估汇总**
+timeline 扫完 = epoch 结束 = T2T 结束。把循环中记录的所有 test 点的 Recall@10/NDCG@10/MRR@10 全局聚合 → 一份 test 结果。
+
+**单用户 A 实际经历的完整旅程（假设有 100 条完整交互，L=64）：**
+
+```
+Step 1 预训练：在 a₁..a₈₀ 上训练模型参数（leave-one-out 划分）
+Step 2 dump ：replay a₁..a₈₀ → 保存 A 的末态 (S, M, V)
+
+Step 3 T2T 启动：
+  user_history[A]      = [a₁, a₂, ..., a₈₀]          ← 从 pretrain 加载
+  _streaming_state[A]  = (S, M, V) 预训练末态         ← 从 dump 加载
+
+Step 3 流式迭代（A 的 a₈₁..a₁₀₀ 散布在全局时间轴上）:
+  遇到 (A, a₈₁) 非 test：
+    - 模型用 history 最近 64 项 [a₁₇..a₈₀] 做 forward
+    - loss 反传，更新模型参数；_streaming_state[A] 演化
+    - user_history[A] ← [a₁, ..., a₈₁]
+  ...（中间非 test 点略）...
+  遇到 (A, a₉₉) 标记 TEST（尾部 10%）：
+    - 先 predict → 记 recall@10（a₉₉ 是否 ∈ top10?）
+    - 再 loss 反传；状态继续演化
+    - user_history[A] ← [..., a₉₉]
+  遇到 (A, a₁₀₀) 标记 TEST：同上
+
+Step 4：所有 user 所有 test 点聚合 → Recall/NDCG/MRR @10
+```
+
+**量级估算**：ml-1m 共 6040 users × 平均 165 交互。t2t 每 user 平均 33 条，尾部 10% ≈ 3 个 test 点。总 test 点 ≈ 18K。
+
+**结果对标参考（Recall@10）：**
+
+| 基线 | 预期值 | 说明 |
+|---|---|---|
+| 纯随机（10/3700） | 0.0027 | 10 个 item 猜中正确 |
+| Popularity（推荐最热门） | 0.01 ~ 0.03 | 常见 baseline 上限 |
+| 非流式 offline（leave-one-out） | 0.28 ~ 0.31 | 全量训练上界 |
+| Streaming 合理区间 | **0.05 ~ 0.15** | 任务固有比 offline 低 2~5× |
+
+**如果跑完 Recall@10 ~ 0.01**：说明模型基本没学到用户个性化（与 popularity 持平），管线仍有病；**如果 ≥ 0.05**：Fix 1+2 起效，方法之间差距有望拉开，可以进入论文实验阶段。
+
+历史数据：嫁接 + 不 dump_state 的旧管线观测到 0.011（即与 popularity 持平）——正是场景 G 要解决的问题。
+
+**本场景与场景 C/F 的核心区别**：
+
+| 维度 | 场景 C/F（嫁接式） | **场景 G（独立式）** |
+|---|---|---|
+| 预训练 | 只预训练 GDN | **五模型各自预训练** |
+| 独有参数（如 V_r/V_k） | 随机初始化，流式阶段用 780 步 + lr=1e-4 几乎没训 | **预训练 150 epoch 完整训练** |
+| Per-user 内部 V | 从 0 开始吸收流式（每 user ~33 步） | **load 预训练末态，直接使用** |
+| 适用场景 | 快速对比 / GDN 嫁接能力评估 | **正式论文主实验** |
+
+#### 场景 H：Popularity 基线（流式 T2T 评估的地板线）
+
+**用途**：判断场景 G 跑出的五模型 Recall@10 ≈ 0.01 究竟是"模型有效但分辨度低"还是"完全没学到用户个性化"。
+**特点**：纯 CPU、无训练、< 30 秒出结果；test 点定义与场景 G 完全一致。
+
+```bash
+# 默认（test_ratio=0.1，与场景 G 一致）
+python scripts/run_popularity_baseline_streaming.py
+
+# 调 test_ratio（看不同密度下基线如何变化）
+python scripts/run_popularity_baseline_streaming.py --test_ratio 0.05
+python scripts/run_popularity_baseline_streaming.py --test_ratio 0.3
+```
+
+**两个基线**：
+
+| 基线 | 定义 |
+|---|---|
+| **POP_global** | 所有 user 共享同一个 top-10 推荐 = pretrain 全局 item 频次 top-10 |
+| **POP_user**   | 推荐该 user 在 pretrain 历史中频次 top-10 item，不足补 POP_global |
+
+> 注意 next-item 预测的特殊性：POP_user 推荐"该用户已经看过的"，但 test 标签是"用户没见过的下一项"，所以 POP_user 通常**比 POP_global 还低**。这与传统评分预测任务相反。
+
+**ml-1m 80/20 上的实测基线（test_ratio=0.1, 19449 个 test 点, 1783 个 t2t user）**：
+
+| 基线 | Recall@10 | NDCG@10 | MRR@10 |
+|---|---|---|---|
+| 纯随机（10 / 3662 items） | 0.0027 | - | - |
+| **POP_user**   | 0.0067 | 0.0032 | 0.0022 |
+| **POP_global** | **0.0105** | 0.0050 | 0.0033 |
+
+**判读规则**（对照 `per_model_streaming_L*.txt` 里的 5 模型 Recall@10）：
+
+| 五模型 Recall@10 区间 | 含义 |
+|---|---|
+| < POP_global (0.011) | **严重病理**：模型连"无脑推热门"都不如 |
+| ≈ POP_global (~0.011) | **没学到用户个性化**：和场景 G 当前结果（0.010-0.011）就是这个状态 |
+| ≥ POP_user (0.007) 但 < POP_global | 学到了流行偏好，没学到用户级信号 |
+| ≥ 1.5 × POP_global (~0.016) | 真正学到了用户级信号，方法有效 |
+
+**对当前 ml-1m streaming 实验的诊断结论**：场景 G 的五模型 Recall@10 ≈ POP_global → 在该 setup 下方法不可区分，应当转向数据稀疏 regime 实验（参见 `scripts/run_non_streaming_experiments_1m.py` + 改 `dataset = "ml-1m-t2t"`，或换 Amazon Beauty 等稀疏数据集）。
+
+**输出**：
+- `experiment_results/popularity_baseline_streaming_L{L}_{ts}.txt`（带数据规模 + 判读指南）
+- `experiment_results/popularity_baseline_streaming_L{L}_{ts}.csv`（两行：POP_global / POP_user）
 
 ---
 

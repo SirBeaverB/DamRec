@@ -107,7 +107,7 @@ def run_pretrain(model_name, config_file, ckp_dir, show_progress=True, max_seq_l
     }
     config = Config(
         model=model_name,
-        dataset="ml-1m-pretrain",
+        dataset=overrides.get("dataset", "ml-1m-pretrain"),
         config_file_list=[config_file],
         config_dict=config_dict,
     )
@@ -153,7 +153,7 @@ def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, 
     save_path = save_path or os.path.join(ckp_dir, f"user_states_{model_name}.pt")
 
     overrides = {
-        "dataset": "ml-1m-pretrain",
+        "dataset": PRETRAIN_OVERRIDES.get("dataset", "ml-1m-pretrain"),
         "streaming_t2t": False,  # 避免 StreamingSequentialDataset，直接用底层 DataFrame
         "streaming_mode": True,  # 模型用 forward_with_streaming 吸收历史
         "MAX_ITEM_LIST_LENGTH": max_seq_len or 128,
@@ -161,7 +161,7 @@ def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, 
     }
     config = Config(
         model=model_name,
-        dataset="ml-1m-pretrain",
+        dataset=overrides["dataset"],
         config_file_list=[config_file],
         config_dict={"show_progress": show_progress, **overrides},
     )

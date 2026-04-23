@@ -1,0 +1,25 @@
+{
+  "model": "Adam",
+  "model_name": "DamRec",
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_L64",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_L64/DamRec-Apr-23-2026_10-58-37.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_L64/user_states_DamRec.pt",
+  "result": {
+    "recall@10": 0.0108,
+    "mrr@10": 0.0031,
+    "ndcg@10": 0.0049,
+    "hit@10": 0.0108,
+    "precision@10": 0.0011
+  },
+  "t_sec": 77.32450316520408,
+  "mem_gb": 3.489464282989502,
+  "pretrain_epochs": 150,
+  "pretrain_sec": 2988.499147234019,
+  "dump_sec": 226.33413500594907,
+  "seed": 2020,
+  "stages_run": {
+    "pretrain": true,
+    "dump": true,
+    "t2t": true
+  }
+}

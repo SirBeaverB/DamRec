@@ -1,0 +1,26 @@
+{
+  "model": "Adam",
+  "model_name": "DamRec",
+  "N": 10,
+  "dataset": "ml-1m-per10",
+  "max_seq_len": 64,
+  "epochs": 150,
+  "ckp_dir": "/root/DamRec/saved/per_user_hist_sweep_N10_L64",
+  "valid_result": {
+    "recall@10": 0.0371,
+    "mrr@10": 0.012,
+    "ndcg@10": 0.0178,
+    "hit@10": 0.0371,
+    "precision@10": 0.0037
+  },
+  "test_result": {
+    "recall@10": 0.0417,
+    "mrr@10": 0.0112,
+    "ndcg@10": 0.0181,
+    "hit@10": 0.0417,
+    "precision@10": 0.0042
+  },
+  "train_time_sec": 31.124807357788086,
+  "peak_mem_gb": 3.353614330291748,
+  "seed": 2020
+}

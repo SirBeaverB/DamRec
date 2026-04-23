@@ -1,0 +1,25 @@
+{
+  "model": "Mo",
+  "model_name": "MoRec",
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_L64",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_L64/MoRec-Apr-23-2026_09-56-08.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_L64/user_states_MoRec.pt",
+  "result": {
+    "recall@10": 0.0108,
+    "mrr@10": 0.0035,
+    "ndcg@10": 0.0051,
+    "hit@10": 0.0108,
+    "precision@10": 0.0011
+  },
+  "t_sec": 40.33622295712121,
+  "mem_gb": 2.8419198989868164,
+  "pretrain_epochs": 150,
+  "pretrain_sec": 3498.1156628790777,
+  "dump_sec": 158.77942537516356,
+  "seed": 2020,
+  "stages_run": {
+    "pretrain": true,
+    "dump": true,
+    "t2t": true
+  }
+}

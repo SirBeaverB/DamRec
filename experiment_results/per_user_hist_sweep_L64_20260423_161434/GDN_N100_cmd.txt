@@ -1,0 +1,2 @@
+/venv/main/bin/python /root/DamRec/scripts/run_per_user_history_sweep_1m.py --worker --model GDN --N 100 --out_json /root/DamRec/experiment_results/per_user_hist_sweep_L64_20260423_161434/GDN_N100.json --max_seq_len 64 --epochs 150
+CUDA_VISIBLE_DEVICES=1

@@ -1,0 +1,25 @@
+{
+  "model": "GDN",
+  "model_name": "GDN",
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_L64",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_L64/GDN-Apr-23-2026_09-56-07.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_L64/user_states_GDN.pt",
+  "result": {
+    "recall@10": 0.0101,
+    "mrr@10": 0.0031,
+    "ndcg@10": 0.0047,
+    "hit@10": 0.0101,
+    "precision@10": 0.001
+  },
+  "t_sec": 36.67089855810627,
+  "mem_gb": 2.693307399749756,
+  "pretrain_epochs": 150,
+  "pretrain_sec": 1835.3427798189223,
+  "dump_sec": 151.6744264580775,
+  "seed": 2020,
+  "stages_run": {
+    "pretrain": true,
+    "dump": true,
+    "t2t": true
+  }
+}

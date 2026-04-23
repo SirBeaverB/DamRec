@@ -1,0 +1,25 @@
+{
+  "model": "Nest",
+  "model_name": "NestRec",
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_L64",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_L64/NestRec-Apr-23-2026_10-30-47.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_L64/user_states_NestRec.pt",
+  "result": {
+    "recall@10": 0.0099,
+    "mrr@10": 0.0031,
+    "ndcg@10": 0.0047,
+    "hit@10": 0.0099,
+    "precision@10": 0.001
+  },
+  "t_sec": 40.84272198006511,
+  "mem_gb": 2.8419198989868164,
+  "pretrain_epochs": 150,
+  "pretrain_sec": 3718.937908969121,
+  "dump_sec": 161.00518664205447,
+  "seed": 2020,
+  "stages_run": {
+    "pretrain": true,
+    "dump": true,
+    "t2t": true
+  }
+}

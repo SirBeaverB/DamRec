@@ -1,0 +1,6 @@
+model,seed,pretrain_sec,t2t_sec,peak_mem_gb,test_recall@10,test_ndcg@10,test_mrr@10,test_hit@10,test_precision@10,ckp_path,states_path
+GDN,2020,1835.34,36.67,2.69,0.0101,0.0047,0.0031,0.0101,0.0010,/root/DamRec/saved/per_model_pretrain_L64/GDN-Apr-23-2026_09-56-07.pth,/root/DamRec/saved/per_model_pretrain_L64/user_states_GDN.pt
+Mo,2020,3498.12,40.34,2.84,0.0108,0.0051,0.0035,0.0108,0.0011,/root/DamRec/saved/per_model_pretrain_L64/MoRec-Apr-23-2026_09-56-08.pth,/root/DamRec/saved/per_model_pretrain_L64/user_states_MoRec.pt
+Nest,2020,3718.94,40.84,2.84,0.0099,0.0047,0.0031,0.0099,0.0010,/root/DamRec/saved/per_model_pretrain_L64/NestRec-Apr-23-2026_10-30-47.pth,/root/DamRec/saved/per_model_pretrain_L64/user_states_NestRec.pt
+Adam,2020,2988.50,77.32,3.49,0.0108,0.0049,0.0031,0.0108,0.0011,/root/DamRec/saved/per_model_pretrain_L64/DamRec-Apr-23-2026_10-58-37.pth,/root/DamRec/saved/per_model_pretrain_L64/user_states_DamRec.pt
+Fro,2020,2057.59,47.87,2.94,0.0100,0.0046,0.0029,0.0100,0.0010,/root/DamRec/saved/per_model_pretrain_L64/FroRec-Apr-23-2026_11-37-09.pth,/root/DamRec/saved/per_model_pretrain_L64/user_states_FroRec.pt
