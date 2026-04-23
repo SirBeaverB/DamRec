@@ -21,3 +21,5 @@ use_chunk_adam: False
 # FLA 路径下 s_r/s_k clamp 上下界；min 为 ~ 时用 1/max
 damrec_scale_max: 2.0
 damrec_scale_min: ~
+# FLA 路径下 g = log(α) 前的下界 clamp，防止 α→0 时 log 下溢成 -inf 触发 NaN
+damrec_log_clip_min: 1.0e-4

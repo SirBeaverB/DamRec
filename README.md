@@ -16,7 +16,7 @@ DamRec 的核心创新灵感来源于序列建模与最优化理论之间深层�
 
 
 
-
+loss目前算的是总值，有些虚高，除batchsize之后是看上去比较正常的值。
 
 
 ## plan
@@ -281,6 +281,80 @@ python run_hyper.py \
 ```
 
 `--max_evals 24` 可延长至约 2h；`algo` 在 `run_hyper.py` 中可改为 `bayes`。
+
+### DamRec 专用 sweep 脚本
+
+DamRec FLA 路径在论文公式之外加了两类经验性 clip：(1) `s_r/s_k` 的上下界 `damrec_scale_max/min`；(2) `g = log(α)` 前的下界 clamp `damrec_log_clip_min`（默认 `1e-4`，没有 clip 时 α 极小会下溢导致 recall 极差）。两个参数都已接出到 yaml + CLI，分别有专用 sweep 脚本。
+
+#### 1）`damrec_log_clip_min` sweep
+
+默认扫 4 个值 `{1e-2, 1e-3, 1e-4, 1e-6}`，双卡并行（每张卡串行 2 个值）。配置：ml-1m + L=64 + EPOCHS=150。
+
+```bash
+# 默认 4 值（gpu0: 1e-2,1e-3 ；gpu1: 1e-4,1e-6）
+bash scripts/run_damrec_log_clip_search.sh
+
+# 改 EPOCHS / L
+EPOCHS=200 L=64 bash scripts/run_damrec_log_clip_search.sh
+
+# 自定义候选值与 tag（数量需为偶数）
+CLIP_LIST="1e-2 1e-4 1e-5 1e-6" TAG_LIST="c1em2 c1em4 c1em5 c1em6" \
+  bash scripts/run_damrec_log_clip_search.sh
+
+# 单值快速试跑（不走 sweep 脚本，直接 CLI）
+python scripts/run_non_streaming_experiments_1m.py -L 64 --models DamRec --damrec-log-clip-min 1e-3
+```
+
+输出 → `logs/damrec_log_clip_<时间戳>/`：
+
+| 文件 | 内容 |
+|---|---|
+| `00_manifest.txt` | 启动信息 + 每组 clip 参数 + 退出码 |
+| `00_summary.txt` | **所有 tag 按 clip 升序的对比表**（valid/test recall@10、ndcg@10、训练时长、显存）|
+| `<TAG>_gpu{0,1}.log` | Python stdout/stderr 全程 |
+| `<TAG>_recbole.log` | RecBole 内部结构化日志 |
+| `<TAG>_cmd.txt` | 复现命令 |
+| `result_<TAG>/non_streaming_1m_L{L}_*.txt/.csv` | 该 tag 的原始结果表（每组隔离避免并发冲突）|
+
+`00_summary.txt` 示例（4 个值跑完后）：
+
+```
+tag          clip       v_recall@10  v_ndcg@10    t_recall@10  t_ndcg@10    time_sec   mem_GB
+------------ ---------- ------------ ------------ ------------ ------------ ---------- --------
+c1em6        1e-6       0.xxxx       0.xxxx       0.xxxx       0.xxxx       xxx.xx     x.xx
+c1em4        1e-4       0.xxxx       0.xxxx       0.xxxx       0.xxxx       xxx.xx     x.xx
+c1em3        1e-3       0.xxxx       0.xxxx       0.xxxx       0.xxxx       xxx.xx     x.xx
+c1em2        1e-2       0.xxxx       0.xxxx       0.xxxx       0.xxxx       xxx.xx     x.xx
+```
+
+#### 2）`damrec_scale_max/min` sweep
+
+```bash
+# 演示版双卡并行（2 组）
+bash scripts/run_damrec_scale_search.sh
+
+# 双卡分波多组（默认 4 组）
+bash scripts/run_damrec_scale_search_4h_dual_gpu.sh
+
+# 自定义组合
+SMAX_LIST="2.0 3.0" SMIN_LIST="0.5 0.3" TAG_LIST="s2p0_m0p5 s3p0_m0p3" \
+  bash scripts/run_damrec_scale_search_4h_dual_gpu.sh
+
+# 单组 CLI
+python scripts/run_non_streaming_experiments_1m.py -L 64 --models DamRec --damrec-scale-max 3 --damrec-scale-min 0.3
+```
+
+输出 → `logs/damrec_scale_<时间戳>/` 或 `logs/damrec_scale_4h_<时间戳>/`，结构与 log_clip sweep 一致。
+
+#### 共用 CLI 参数
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--damrec-log-clip-min C` | yaml 1e-4 | `log(α)` 前下界 clamp，过小会下溢、过大会扼杀梯度 |
+| `--damrec-scale-max S`   | yaml 2.0 | FLA 路径 `s_r/s_k` 上界 |
+| `--damrec-scale-min S`   | yaml `1/max` | FLA 路径 `s_r/s_k` 下界 |
+| `-L / --max_seq_len`     | 128       | 序列长度，sweep 默认 64 |
+| `--epochs N`             | 150       | 上界，实际由早停决定 |
 
 ### 流式 vs 非流式 recall 差异
 - **非流式** (`streaming_mode: False`)：标准训练，recall 可达 ~14%

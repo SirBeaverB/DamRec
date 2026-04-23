@@ -71,6 +71,7 @@ def run_single_model(
     checkpoint_dir=None,
     damrec_scale_max=None,
     damrec_scale_min=None,
+    damrec_log_clip_min=None,
 ):
     """运行单个模型，返回 (valid_result_dict, test_result_dict, train_time_sec, peak_mem_gb) 或 None（失败时）。
     valid_result_dict / test_result_dict 包含 recall@10, mrr@10, ndcg@10, hit@10, precision@10 等。
@@ -93,6 +94,8 @@ def run_single_model(
         config_dict["damrec_scale_max"] = damrec_scale_max
     if damrec_scale_min is not None:
         config_dict["damrec_scale_min"] = damrec_scale_min
+    if damrec_log_clip_min is not None:
+        config_dict["damrec_log_clip_min"] = damrec_log_clip_min
 
     try:
         # RecBole 只解析形如 --key=value 的 argv；本脚本用 argparse 传的 -L/--models/--damrec-* 会触发

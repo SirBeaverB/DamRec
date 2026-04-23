@@ -72,6 +72,20 @@ def main():
         metavar="S",
         help="覆盖 DamRec FLA 路径 s_r/s_k 下界（仅 DamRec；默认读 yaml 或 1/max）",
     )
+    parser.add_argument(
+        "--damrec-log-clip-min",
+        type=float,
+        default=None,
+        metavar="C",
+        help="覆盖 DamRec FLA 路径 g=log(α) 前的下界 clamp（仅 DamRec；默认读 yaml=1e-4）",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="结果 TXT/CSV 输出目录（默认 experiment_results/）；sweep 用于隔离每组结果",
+    )
     args = parser.parse_args()
 
     dataset = "ml-1m"
@@ -116,11 +130,15 @@ def main():
             checkpoint_dir=checkpoint_dir,
             damrec_scale_max=args.damrec_scale_max,
             damrec_scale_min=args.damrec_scale_min,
+            damrec_log_clip_min=args.damrec_log_clip_min,
         )
         results[model_key] = ret
 
     # 输出表格（文件名包含 L）
-    output_dir = os.path.join(proj_root, "experiment_results")
+    if args.output_dir:
+        output_dir = os.path.abspath(args.output_dir)
+    else:
+        output_dir = os.path.join(proj_root, "experiment_results")
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_file = os.path.join(output_dir, f"non_streaming_1m_L{max_seq_len}_{timestamp}.txt")

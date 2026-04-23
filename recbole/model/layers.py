@@ -2010,7 +2010,8 @@ class GatedDeltaLayer(nn.Module):
                     "[GatedDeltaLayer] FLA chunk path active, scale=1.0 (与 Python 循环对齐)"
                 )
                 GatedDeltaLayer._fla_path_logged = True
-            g = torch.log(beta_gates.expand(-1, -1, self.num_heads).clamp(min=1e-8))
+            g = torch.log(beta_gates.expand(-1, -1, self.num_heads).clamp(min=1e-4))
+            g = g.clamp(min=-25.0, max=0.0)
             beta_fla = gamma_gates.expand(-1, -1, self.num_heads)
             h0 = S_init
             # scale=1.0: 与 Python 循环一致，FLA 默认 1/sqrt(d_head) 会导致输出缩小，recall 异常
@@ -2567,7 +2568,8 @@ class GatedDeltaLayerChunkMomentum(nn.Module):
             v_c = torch.where(mask_H.expand_as(v_c).bool(), v_c, torch.full_like(v_c, eps_kv))
             beta_c = torch.where(mask_c.unsqueeze(-1), beta_gates[:, start:end, :], torch.ones_like(beta_gates[:, start:end, :]))
 
-            g_c = torch.log(beta_c.expand(-1, -1, self.num_heads).clamp(min=1e-8))
+            g_c = torch.log(beta_c.expand(-1, -1, self.num_heads).clamp(min=1e-4))
+            g_c = g_c.clamp(min=-25.0, max=0.0)
             beta_fla = gamma_gates[:, start:end, :].expand(-1, -1, self.num_heads)
 
             S_start = S
@@ -2709,7 +2711,8 @@ class GatedDeltaLayerChunkNesterov(nn.Module):
             v_c = torch.where(mask_H.expand_as(v_c).bool(), v_c, torch.full_like(v_c, eps_kv))
             beta_c = torch.where(mask_c.unsqueeze(-1), beta_gates[:, start:end, :], torch.ones_like(beta_gates[:, start:end, :]))
 
-            g_c = torch.log(beta_c.expand(-1, -1, self.num_heads).clamp(min=1e-8))
+            g_c = torch.log(beta_c.expand(-1, -1, self.num_heads).clamp(min=1e-4))
+            g_c = g_c.clamp(min=-25.0, max=0.0)
             beta_fla = gamma_gates[:, start:end, :].expand(-1, -1, self.num_heads)
 
             S_start = S
@@ -2768,6 +2771,7 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
         use_fla_intrachunk=True,
         damrec_scale_max=2.0,
         damrec_scale_min=None,
+        damrec_log_clip_min=1.0e-4,
     ):
         super().__init__()
         assert d_model % num_heads == 0
@@ -2785,6 +2789,10 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
             self.damrec_scale_min = 1.0 / self.damrec_scale_max
         assert self.damrec_scale_min > 0 and self.damrec_scale_max >= self.damrec_scale_min, (
             f"damrec_scale_min/max invalid: {self.damrec_scale_min}, {self.damrec_scale_max}"
+        )
+        self.damrec_log_clip_min = float(damrec_log_clip_min) if damrec_log_clip_min is not None else 1.0e-4
+        assert 0.0 < self.damrec_log_clip_min < 1.0, (
+            f"damrec_log_clip_min must be in (0, 1): {self.damrec_log_clip_min}"
         )
 
         self.q_proj = nn.Linear(d_model, d_model)
@@ -3016,7 +3024,7 @@ class GatedDeltaLayerChunkDamRec(nn.Module):
                 bg = beta_gates[:, start:end, :]
                 ag = torch.where(mask_c.unsqueeze(-1), ag, torch.ones_like(ag))
                 bg = torch.where(mask_c.unsqueeze(-1), bg, torch.ones_like(bg))
-                g_c = torch.log(ag.expand(-1, -1, self.num_heads).clamp(min=1e-4))
+                g_c = torch.log(ag.expand(-1, -1, self.num_heads).clamp(min=self.damrec_log_clip_min))
                 g_c = g_c.clamp(min=-25.0, max=0.0)
                 # β 过小会使 FLA 三角求解反向病态；略抬高下限（与占位 β=1 一致）
                 beta_fla = bg.expand(-1, -1, self.num_heads).clamp(min=1e-2, max=1.0)
@@ -3335,7 +3343,8 @@ class GatedDeltaLayerChunkFroAdam(nn.Module):
             v_c = torch.where(mask_H.expand_as(v_c).bool(), v_c, torch.full_like(v_c, eps_kv))
             beta_c = torch.where(mask_c.unsqueeze(-1), beta_gates[:, start:end, :], torch.ones_like(beta_gates[:, start:end, :]))
 
-            g_c = torch.log(beta_c.expand(-1, -1, self.num_heads).clamp(min=1e-8))
+            g_c = torch.log(beta_c.expand(-1, -1, self.num_heads).clamp(min=1e-4))
+            g_c = g_c.clamp(min=-25.0, max=0.0)
             beta_fla = gamma_gates[:, start:end, :].expand(-1, -1, self.num_heads)
 
             S_start = S

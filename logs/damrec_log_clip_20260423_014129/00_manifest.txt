@@ -1,0 +1,26 @@
+=== DamRec log_clip_min sweep (dual GPU, each card serial) ===
+start_utc=2026-04-23T01:41:29Z
+ROOT=/root/DamRec
+LOGDIR=/root/DamRec/logs/damrec_log_clip_20260423_014129
+EPOCHS=150  L=64
+CUDA_VISIBLE_DEVICES (host): unset
+
+--- gpu0 (serial) ---
+  [0] tag=c1em2      log_clip_min=1e-2
+  [1] tag=c1em3      log_clip_min=1e-3
+--- gpu1 (serial) ---
+  [2] tag=c1em4      log_clip_min=1e-4
+  [3] tag=c1em6      log_clip_min=1e-6
+
+
+
+--- gpu1 start tag=c1em4 clip=1e-4 2026-04-23T01:41:29Z ---
+--- gpu0 start tag=c1em2 clip=1e-2 2026-04-23T01:41:29Z ---
+  gpu0 tag=c1em2 clip=1e-2 exit_code=0 end=2026-04-23T01:41:40Z
+[archive] c1em2 <- DamRec-ml-1m-Apr-23-2026_01-41-36-bcfb45.log
+
+--- gpu0 start tag=c1em3 clip=1e-3 2026-04-23T01:41:40Z ---
+  gpu1 tag=c1em4 clip=1e-4 exit_code=0 end=2026-04-23T01:41:40Z
+[archive] c1em4 <- DamRec-ml-1m-Apr-23-2026_01-41-36-bcfb45.log
+
+--- gpu1 start tag=c1em6 clip=1e-6 2026-04-23T01:41:41Z ---

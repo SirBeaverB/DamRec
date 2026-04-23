@@ -1,0 +1,6 @@
+# 2026-04-23T03:01:40Z
+CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 \
+  python -u scripts/run_non_streaming_experiments_1m.py \
+    -L 64 --models DamRec --epochs 150 \
+    --damrec-log-clip-min 1e-3 \
+    --output-dir /root/DamRec/logs/damrec_log_clip_20260423_014728/result_c1em3

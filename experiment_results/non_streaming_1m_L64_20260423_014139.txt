@@ -1,0 +1,25 @@
+非流式实验 (streaming_mode=False) - ml-1m
+dataset=ml-1m, L=64, epochs=150, time=20260423_014139
+checkpoint_dir=/root/DamRec/saved/non_streaming_1m_L64
+
+--- VALID ---
+模型			DamRec
+------------------------------------------------------------------------------------------
+recall@10			N/A		
+mrr@10			N/A		
+ndcg@10			N/A		
+hit@10			N/A		
+precision@10			N/A		
+
+--- TEST ---
+模型			DamRec
+------------------------------------------------------------------------------------------
+recall@10			N/A		
+mrr@10			N/A		
+ndcg@10			N/A		
+hit@10			N/A		
+precision@10			N/A		
+
+--- 训练 ---
+time (s)		N/A		
+显存 (GB)		N/A		

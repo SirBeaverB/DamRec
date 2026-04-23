@@ -50,6 +50,8 @@ class DamRec(SequentialRecommender):
         self.damrec_scale_max = _smax if _smax is not None else 2.0
         _smin = config["damrec_scale_min"]
         self.damrec_scale_min = _smin if _smin is not None else (1.0 / self.damrec_scale_max)
+        _lcmin = config["damrec_log_clip_min"]
+        self.damrec_log_clip_min = _lcmin if _lcmin is not None else 1.0e-4
 
         self.item_embedding = nn.Embedding(
             self.n_items, self.embedding_size, padding_idx=0
@@ -71,6 +73,7 @@ class DamRec(SequentialRecommender):
             layer_kw["use_fla_intrachunk"] = self.damrec_chunk_use_fla
             layer_kw["damrec_scale_max"] = self.damrec_scale_max
             layer_kw["damrec_scale_min"] = self.damrec_scale_min
+            layer_kw["damrec_log_clip_min"] = self.damrec_log_clip_min
 
         self.layers = nn.ModuleList([layer_cls(**layer_kw) for _ in range(self.n_layers)])
         self.output_proj = nn.Linear(self.embedding_size, self.embedding_size)

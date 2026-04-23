@@ -1,0 +1,16 @@
+=== DamRec log_clip_min sweep summary ===
+LOGDIR=/root/DamRec/logs/damrec_log_clip_20260423_014728
+L=64  EPOCHS=150  end_utc=2026-04-23T04:13:47Z
+
+tag          clip       v_recall@10  v_ndcg@10    t_recall@10  t_ndcg@10    time_sec   mem_GB  
+------------ ---------- ------------ ------------ ------------ ------------ ---------- --------
+c1em6        1e-6       0.3119       0.1824       0.2921       0.1696       4190.92    3.35    
+c1em4        1e-4       0.3119       0.1824       0.2921       0.1696       4349.74    3.35    
+c1em3        1e-3       0.3119       0.1824       0.2921       0.1696       4197.85    3.35    
+c1em2        1e-2       0.3119       0.1824       0.2921       0.1696       4314.95    3.35    
+
+--- 原始 CSV 路径 ---
+  c1em2 -> /root/DamRec/logs/damrec_log_clip_20260423_014728/result_c1em2/non_streaming_1m_L64_20260423_030138.csv
+  c1em3 -> /root/DamRec/logs/damrec_log_clip_20260423_014728/result_c1em3/non_streaming_1m_L64_20260423_041324.csv
+  c1em4 -> /root/DamRec/logs/damrec_log_clip_20260423_014728/result_c1em4/non_streaming_1m_L64_20260423_030210.csv
+  c1em6 -> /root/DamRec/logs/damrec_log_clip_20260423_014728/result_c1em6/non_streaming_1m_L64_20260423_041345.csv
