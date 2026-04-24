@@ -1,0 +1,9 @@
+=== Retest perN streaming T2T ===
+start  = 2026-04-24T03:09:51.037737
+argv   = ['scripts/retest_perN_streaming_t2t_1m.py', '--txt-only-20-50']
+host CUDA = (unset)
+slot GPUs = ['0', '1']
+Ns, models, seeds = [10, 20, 50, 100], ['GDN', 'Adam', 'Fro'], [2020]
+L, t2t_lr, at10_only, txt_only_20_50 = 64, None, False, True
+runnable jobs = 12  missing = 0
+orchestrate.log = /root/DamRec/experiment_results/retest_perN_streaming_L64_20260424_030951/orchestrate.log

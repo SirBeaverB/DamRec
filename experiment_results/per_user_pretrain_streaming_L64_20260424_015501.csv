@@ -1,0 +1,7 @@
+model,N,seed,pretrain_sec,t2t_sec,peak_mem_gb,test_recall@10,test_ndcg@10,test_mrr@10,test_hit@10,test_precision@10,ckp_path,states_path
+GDN,100,2021,865.73,33.34,2.69,0.0118,0.0053,0.0034,0.0118,0.0012,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/GDN-Apr-24-2026_01-55-22.pth,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/user_states_GDN.pt
+GDN,100,2022,1173.87,33.02,2.69,0.0110,0.0048,0.0030,0.0110,0.0011,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2022/GDN-Apr-24-2026_01-55-23.pth,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2022/user_states_GDN.pt
+Adam,100,2021,1956.03,257.80,3.49,0.0099,0.0046,0.0030,0.0099,0.0010,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/DamRec-Apr-24-2026_02-13-31.pth,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/user_states_DamRec.pt
+Adam,100,2022,2288.91,78.32,3.49,0.0100,0.0046,0.0030,0.0100,0.0010,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2022/DamRec-Apr-24-2026_02-18-42.pth,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2022/user_states_DamRec.pt
+Fro,100,2021,2024.98,82.56,2.94,0.0110,0.0049,0.0031,0.0110,0.0011,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/FroRec-Apr-24-2026_02-55-22.pth,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/user_states_FroRec.pt
+Fro,100,2022,2097.70,48.39,2.94,0.0101,0.0048,0.0032,0.0101,0.0010,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2022/FroRec-Apr-24-2026_03-02-52.pth,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2022/user_states_FroRec.pt

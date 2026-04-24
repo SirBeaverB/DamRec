@@ -1,0 +1,28 @@
+{
+  "model": "GDN",
+  "model_name": "GDN",
+  "N": 100,
+  "dataset": "ml-1m-pretrain-per100",
+  "ckp_dir": "/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021",
+  "ckp_path": "/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/GDN-Apr-24-2026_01-55-22.pth",
+  "states_path": "/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/user_states_GDN.pt",
+  "result": {
+    "recall@10": 0.0118,
+    "mrr@10": 0.0034,
+    "ndcg@10": 0.0053,
+    "hit@10": 0.0118,
+    "precision@10": 0.0012
+  },
+  "t_sec": 33.342267439933494,
+  "mem_gb": 2.691873550415039,
+  "pretrain_sec": 865.7285752110183,
+  "dump_sec": 154.9548924220726,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "seed": 2021,
+  "stages_run": {
+    "pretrain": true,
+    "dump": true,
+    "t2t": true
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "model": "GDN",
+  "model_name": "GDN",
+  "N": 100,
+  "seed": 2020,
+  "ckp_path": "/root/DamRec/saved/per_user_pretrain_perN100_L64/GDN-Apr-23-2026_18-54-39.pth",
+  "states_path": "/root/DamRec/saved/per_user_pretrain_perN100_L64/user_states_GDN.pt",
+  "result": {
+    "recall@10": 0.0104,
+    "recall@20": 0.0205,
+    "recall@50": 0.0494,
+    "mrr@10": 0.0031,
+    "mrr@20": 0.0038,
+    "mrr@50": 0.0047,
+    "ndcg@10": 0.0048,
+    "ndcg@20": 0.0073,
+    "ndcg@50": 0.013,
+    "hit@10": 0.0104,
+    "hit@20": 0.0205,
+    "hit@50": 0.0494,
+    "precision@10": 0.001,
+    "precision@20": 0.001,
+    "precision@50": 0.001
+  },
+  "t_sec": 68.8441088157706,
+  "mem_gb": 2.6962318420410156,
+  "t2t_lr": 0.0001
+}

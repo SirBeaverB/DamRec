@@ -3238,6 +3238,8 @@ class GatedDeltaLayerChunkFroAdam(nn.Module):
         adam_beta2=0.999,
         adam_eps=1e-8,
         adam_eta=0.1,
+        use_first_moment=True,
+        use_second_moment=True,
     ):
         super().__init__()
         assert d_model % num_heads == 0
@@ -3248,6 +3250,9 @@ class GatedDeltaLayerChunkFroAdam(nn.Module):
         self.beta2 = adam_beta2
         self.eps = adam_eps
         self.eta = adam_eta
+        # 消融开关：关闭 V 即 M-only (无 scalar 二阶预条件子)；关闭 M 即 V-only (raw ΔS / √V)
+        self.use_first_moment = bool(use_first_moment)
+        self.use_second_moment = bool(use_second_moment)
         self._use_fla = _FLA_AVAILABLE
 
         self.q_proj = nn.Linear(d_model, d_model)
@@ -3308,8 +3313,10 @@ class GatedDeltaLayerChunkFroAdam(nn.Module):
         if not GatedDeltaLayerChunkFroAdam._logged:
             import logging
             logging.getLogger("recbole").info(
-                "[FroRec ChunkFroAdam] FLA + F-Adam (β1=%.2f, β2=%.3f, η=%.2f)"
-                % (self.beta1, self.beta2, self.eta)
+                "[FroRec ChunkFroAdam] FLA + F-Adam (β1=%.2f, β2=%.3f, η=%.2f) "
+                "use_M=%s use_V=%s"
+                % (self.beta1, self.beta2, self.eta,
+                   self.use_first_moment, self.use_second_moment)
             )
             GatedDeltaLayerChunkFroAdam._logged = True
 
@@ -3359,24 +3366,30 @@ class GatedDeltaLayerChunkFroAdam(nn.Module):
             delta_S = S_end - S_start
             delta_S = torch.nan_to_num(delta_S, nan=0.0, posinf=0.0, neginf=0.0)
 
-            # 1. 一阶动量 M 保持矩阵形式 [B, H, d_h, d_h]
+            # 1. 一阶动量 M（关闭时：numerator = raw delta_S，state 仍累进便于 state_dump 维度兼容）
             M = self.beta1 * M + (1.0 - self.beta1) * delta_S
 
-            # 2. [F-Adam] 二阶矩 V 降维为标量 [B, H, 1, 1]
+            # 2. [F-Adam] 二阶矩 V 降维为标量 [B, H, 1, 1]（关闭时：state 仍累进，denom 强制为 1）
             delta_sq_mean = (delta_S ** 2).mean(dim=(-1, -2), keepdim=True)
             V = self.beta2 * V + (1.0 - self.beta2) * delta_sq_mean
             V = V.clamp(min=0.0)
 
-            # 3. 偏差校正
+            # 3. 偏差校正（仅对启用项生效）
             step_view = chunk_step.view(B, 1, 1, 1)
-            bc1 = (1.0 - torch.pow(self.beta1, step_view)).clamp(min=1e-8)
-            bc2 = (1.0 - torch.pow(self.beta2, step_view)).clamp(min=1e-8)
-            M_hat = M / bc1
-            V_hat = V / bc2
+            if self.use_first_moment:
+                bc1 = (1.0 - torch.pow(self.beta1, step_view)).clamp(min=1e-8)
+                numer = M / bc1
+            else:
+                numer = delta_S
+            if self.use_second_moment:
+                bc2 = (1.0 - torch.pow(self.beta2, step_view)).clamp(min=1e-8)
+                V_hat = V / bc2
+                denom = (torch.sqrt(V_hat) + self.eps).clamp(min=1e-6)
+            else:
+                denom = 1.0
 
-            # 4. 标量除法，几何结构 100% 安全
-            denom = (torch.sqrt(V_hat) + self.eps).clamp(min=1e-6)
-            S = S_end + self.eta * (M_hat / denom)
+            # 4. 更新 S
+            S = S_end + self.eta * (numer / denom)
 
             outputs.append(o_c)
 

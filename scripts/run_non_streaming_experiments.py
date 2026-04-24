@@ -36,6 +36,7 @@ MODEL_CONFIGS = {
     "Nest": "recbole/properties/quick_start_config/sequential_NestRec.yaml",
     "DamRec": "recbole/properties/quick_start_config/sequential_DamRec.yaml",
     "Fro": "recbole/properties/quick_start_config/sequential_FroRec.yaml",
+    "FroNoV": "recbole/properties/quick_start_config/sequential_FroRecNoV.yaml",
 }
 
 # 旧键名兼容：与 MODEL_CONFIGS 中同一套 yaml / RecBole 类名 DamRec
@@ -47,7 +48,7 @@ def resolve_model_key(key: str) -> str:
 
 
 # 表格/CSV 列顺序（与 MODEL_CONFIGS 一致）
-MODEL_COLS_ORDER = ["GDN", "Mo", "Nest", "DamRec", "Fro"]
+MODEL_COLS_ORDER = ["GDN", "Mo", "Nest", "DamRec", "Fro", "FroNoV"]
 
 # CLI 键 -> 实际模型类名（传给 Config model=）
 CONFIG_TO_MODEL = {
@@ -56,6 +57,7 @@ CONFIG_TO_MODEL = {
     "Nest": "NestRec",
     "DamRec": "DamRec",
     "Fro": "FroRec",
+    "FroNoV": "FroRecNoV",
 }
 
 
@@ -72,6 +74,7 @@ def run_single_model(
     damrec_scale_max=None,
     damrec_scale_min=None,
     damrec_log_clip_min=None,
+    config_overrides=None,
 ):
     """运行单个模型，返回 (valid_result_dict, test_result_dict, train_time_sec, peak_mem_gb) 或 None（失败时）。
     valid_result_dict / test_result_dict 包含 recall@10, mrr@10, ndcg@10, hit@10, precision@10 等。
@@ -96,6 +99,8 @@ def run_single_model(
         config_dict["damrec_scale_min"] = damrec_scale_min
     if damrec_log_clip_min is not None:
         config_dict["damrec_log_clip_min"] = damrec_log_clip_min
+    if config_overrides:
+        config_dict.update(config_overrides)
 
     try:
         # RecBole 只解析形如 --key=value 的 argv；本脚本用 argparse 传的 -L/--models/--damrec-* 会触发

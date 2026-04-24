@@ -21,8 +21,9 @@
   # 嫁接：用 GDN 的离线权重热启动任意变体（MoRec/NestRec/DamRec/FroRec），M/V 从 0 吸收流式
   python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model DamRec
 
-  # 4. 完整流程：预训练后自动 T2T（默认导出 user_states.pt，工业标准）
+  # 4. 完整流程：预训练后自动 T2T（默认尝试导出 user_states.pt；GDN 系支持，GRU4Rec 无 forward_with_streaming 会自动跳过）
   python scripts/run_pretrain_t2t_1m.py --mode full
+  python scripts/run_pretrain_t2t_1m.py --mode full --model GRU4Rec   # 仅跑 GRU4Rec：80% pretrain + 20% 流式 T2T
   python scripts/run_pretrain_t2t_1m.py --mode full --no_dump_state  # 禁用状态导出
 
   # 5. 状态导出：从已有 checkpoint 导出用户状态库 (Redis 模拟)
@@ -55,6 +56,9 @@ MODEL_CONFIGS = {
     "Nest": ("NestRec", "recbole/properties/quick_start_config/sequential_NestRec.yaml"),
     "Adam": ("DamRec", "recbole/properties/quick_start_config/sequential_DamRec.yaml"),
     "Fro": ("FroRec", "recbole/properties/quick_start_config/sequential_FroRec.yaml"),
+    "FroNoV": ("FroRecNoV", "recbole/properties/quick_start_config/sequential_FroRecNoV.yaml"),
+    # 与 run_baseline_experiments_1m 同 yaml；T2T 用 StreamingTestThenTrainTrainer，无跨 batch GRU 隐状态（与 GDN 的 S 不同）
+    "GRU4Rec": ("GRU4Rec", "recbole/properties/quick_start_config/baselines/sequential_GRU4Rec_1m.yaml"),
 }
 
 PRETRAIN_OVERRIDES = {
@@ -63,6 +67,7 @@ PRETRAIN_OVERRIDES = {
     "epochs": 150,
     "worker": 4,
     "streaming_mode": False,
+    "topk": [10, 20, 50],  # 报多 K，避免单 K cherry-pick；@10 最严，@20/@50 递宽
 }
 
 # 流式阶段 lr 建议比预训练低 5~10 倍：数据逐条来，易被噪声带偏，步子迈小更稳
@@ -81,6 +86,7 @@ T2T_OVERRIDES = {
     "enable_scaler": False,
     "use_compile": False,
     "learning_rate": 0.0001,  # 预训练常用 0.001；流式微调降 10 倍，抗噪防崩塌
+    "topk": [10, 20, 50],  # 流式评估也报多 K
 }
 
 
@@ -94,11 +100,13 @@ def _ensure_split():
         subprocess.run([sys.executable, os.path.join(_script_dir, "prepare_ml1m_80_20_split.py")], check=True)
 
 
-def run_pretrain(model_name, config_file, ckp_dir, show_progress=True, max_seq_len=None):
+def run_pretrain(model_name, config_file, ckp_dir, show_progress=True, max_seq_len=None, seed=None):
     """在 ml-1m-pretrain 上预训练，保存到 ckp_dir"""
     overrides = dict(PRETRAIN_OVERRIDES)
     if max_seq_len is not None:
         overrides["MAX_ITEM_LIST_LENGTH"] = max_seq_len
+    if seed is not None:
+        overrides["seed"] = int(seed)
     config_dict = {
         "show_progress": show_progress,
         "gpu_id": "0",
@@ -129,7 +137,7 @@ def run_pretrain(model_name, config_file, ckp_dir, show_progress=True, max_seq_l
     return trainer.saved_model_file
 
 
-def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, max_seq_len=None, show_progress=True):
+def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, max_seq_len=None, show_progress=True, seed=None):
     """工业标准：导出预训练结束时的用户状态 (S, M, V) 到 user_states_{model_name}.pt。
     直接按 (user_id, timestamp) 排序遍历底层数据，保证全员覆盖、绝对时序，避免 DataLoader 乱序/漏人。
     """
@@ -159,6 +167,8 @@ def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, 
         "MAX_ITEM_LIST_LENGTH": max_seq_len or 128,
         "show_progress": show_progress,
     }
+    if seed is not None:
+        overrides["seed"] = int(seed)
     config = Config(
         model=model_name,
         dataset=overrides["dataset"],
@@ -203,6 +213,13 @@ def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, 
     if "other_parameter" in checkpoint and checkpoint["other_parameter"]:
         model.load_other_parameter(checkpoint["other_parameter"])
 
+    if not callable(getattr(model, "forward_with_streaming", None)):
+        logger.warning(
+            set_color("[State Dump]: ", "yellow")
+            + f"{model_name} 无 forward_with_streaming，跳过 user_states 导出；T2T 仍按时间线跑（无跨 batch 隐式状态库）。"
+        )
+        return None
+
     model.eval()
     model._streaming_state = {}
 
@@ -242,7 +259,7 @@ def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, 
     return save_path
 
 
-def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, max_seq_len=None, zero_shot=False, user_states_path=None):
+def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, max_seq_len=None, zero_shot=False, user_states_path=None, seed=None):
     """从 checkpoint 加载，在 ml-1m-t2t 上运行 T2T。
     t2t_model: 若指定且与 checkpoint 中的 model 不同，则用 strict=False 做「嫁接」：
        用 GDN 的离线权重热启动 MoRec/NestRec/DamRec/FroRec，M/V 从 0 吸收流式数据。
@@ -281,6 +298,8 @@ def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, 
     if zero_shot:
         overrides["streaming_zero_shot"] = True
         overrides["learning_rate"] = 0.0
+    if seed is not None:
+        overrides["seed"] = int(seed)
     config_dict = {
         "show_progress": show_progress,
         "gpu_id": "0",

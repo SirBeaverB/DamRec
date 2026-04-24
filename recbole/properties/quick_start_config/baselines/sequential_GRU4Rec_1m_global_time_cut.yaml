@@ -1,0 +1,32 @@
+# GRU4Rec (ml-1m) — 全库按时间戳排序后比例切分（group_by: none = 总体一刀切）
+# 与 sequential_GRU4Rec_1m.yaml 的 LS+按用户留一不同：此处 train/valid/test 为
+# 排序后交互序列上连续的三段，与 80% pretrain / 20% t2t 的「全库时间带」可对照（比例可调）。
+#
+# RecBole 语义: build() 中先 order: TO 再 split RS & group_by none → split_by_ratio 按行下标切。
+
+dataset: ml-1m
+MAX_ITEM_LIST_LENGTH: 128
+embedding_size: 64
+hidden_size: 128
+num_layers: 1
+dropout_prob: 0.3
+streaming_mode: False
+train_neg_sample_args: ~
+
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  order: TO
+  group_by: none
+  mode: full
+
+repeatable: True
+train_batch_size: 4096
+eval_batch_size: 2048
+epochs: 150
+stopping_step: 10
+learning_rate: 0.001
+loss_type: CE
+
+# 与流式 T2T 结果表对照时可打开多 topk
+topk: [5, 10, 20, 50]
+metrics: ['Recall', 'MRR', 'NDCG', 'Hit', 'Precision']

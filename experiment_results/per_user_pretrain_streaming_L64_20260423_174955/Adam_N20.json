@@ -1,0 +1,28 @@
+{
+  "model": "Adam",
+  "model_name": "DamRec",
+  "N": 20,
+  "dataset": "ml-1m-pretrain-per20",
+  "ckp_dir": "/root/DamRec/saved/per_user_pretrain_perN20_L64",
+  "ckp_path": "/root/DamRec/saved/per_user_pretrain_perN20_L64/DamRec-Apr-23-2026_18-00-39.pth",
+  "states_path": "/root/DamRec/saved/per_user_pretrain_perN20_L64/user_states_DamRec.pt",
+  "result": {
+    "recall@10": 0.0103,
+    "mrr@10": 0.0029,
+    "ndcg@10": 0.0046,
+    "hit@10": 0.0103,
+    "precision@10": 0.001
+  },
+  "t_sec": 71.61679689609446,
+  "mem_gb": 3.479872703552246,
+  "pretrain_sec": 851.4936067638919,
+  "dump_sec": 331.1180480851326,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "seed": 2020,
+  "stages_run": {
+    "pretrain": true,
+    "dump": true,
+    "t2t": true
+  }
+}

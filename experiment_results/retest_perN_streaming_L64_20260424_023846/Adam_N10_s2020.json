@@ -1,0 +1,28 @@
+{
+  "model": "Adam",
+  "model_name": "DamRec",
+  "N": 10,
+  "seed": 2020,
+  "ckp_path": "/root/DamRec/saved/per_user_pretrain_perN10_L64/DamRec-Apr-23-2026_17-50-08.pth",
+  "states_path": "/root/DamRec/saved/per_user_pretrain_perN10_L64/user_states_DamRec.pt",
+  "result": {
+    "recall@10": 0.0088,
+    "recall@20": 0.0174,
+    "recall@50": 0.0405,
+    "mrr@10": 0.0029,
+    "mrr@20": 0.0035,
+    "mrr@50": 0.0042,
+    "ndcg@10": 0.0043,
+    "ndcg@20": 0.0064,
+    "ndcg@50": 0.0109,
+    "hit@10": 0.0088,
+    "hit@20": 0.0174,
+    "hit@50": 0.0405,
+    "precision@10": 0.0009,
+    "precision@20": 0.0009,
+    "precision@50": 0.0008
+  },
+  "t_sec": 333.80271210102364,
+  "mem_gb": 3.4829444885253906,
+  "t2t_lr": 0.0001
+}

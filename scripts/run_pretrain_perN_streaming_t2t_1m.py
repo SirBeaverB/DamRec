@@ -18,7 +18,8 @@ Pretrain-lite + Streaming T2T on ml-1m (per-user 历史稀疏 regime)
 双卡并行：{N} × {models} 任务矩阵排到 2 GPU，subprocess + CUDA_VISIBLE_DEVICES 隔离。
 
 Usage:
-  # 默认：N ∈ {5,10,20,50} × {GDN, Adam, Fro} = 12 jobs on 2 GPUs
+  # 默认：N ∈ {10,20,50,100} × {GDN, Adam, Fro} = 12 jobs on 2 GPUs
+  # （N 过小如 5 易导致有效序列过短、batch 内统计不稳；脚本要求 N>=10）
   python scripts/run_pretrain_perN_streaming_t2t_1m.py
 
   # 只跑部分 N
@@ -58,12 +59,39 @@ DATASET_ROOT = os.path.join(PROJ, "dataset")
 PRETRAIN_SRC_DIR = os.path.join(DATASET_ROOT, "ml-1m-pretrain")
 PRETRAIN_SRC_INTER = os.path.join(PRETRAIN_SRC_DIR, "ml-1m-pretrain.inter")
 
-# 主表指标
-METRIC_KEYS = ["recall@10", "ndcg@10", "mrr@10"]
-METRIC_KEYS_FULL = ["recall@10", "ndcg@10", "mrr@10", "hit@10", "precision@10"]
+# 主表指标（扩到多 K，@10 最严，@20/@50 递宽；默认 topk=[10,20,50] 见 PRETRAIN/T2T_OVERRIDES）
+METRIC_KEYS = [
+    "recall@10", "ndcg@10", "mrr@10",
+    "recall@20", "ndcg@20", "mrr@20",
+    "recall@50", "ndcg@50", "mrr@50",
+]
+METRIC_KEYS_FULL = [
+    "recall@10", "ndcg@10", "mrr@10", "hit@10", "precision@10",
+    "recall@20", "ndcg@20", "mrr@20", "hit@20", "precision@20",
+    "recall@50", "ndcg@50", "mrr@50", "hit@50", "precision@50",
+]
 
-DEFAULT_NS = [5, 10, 20, 50]
+# N 过小：真实交互极少，配合 CHUNK_SIZE=16、较大 train batch 时易数值/优化不稳定
+MIN_N = 10
+DEFAULT_NS = [10, 20, 50, 100]
 DEFAULT_MODELS = ["GDN", "Adam", "Fro"]
+DEFAULT_SEEDS = [2020]
+
+
+# ---------------------------------------------------------------- GPU（与 run_per_user_history_sweep_1m 一致）
+def _visible_gpu_ids_for_children(n_wanted: int):
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if not raw:
+        return [str(i) for i in range(n_wanted)]
+    parts = [p.strip() for p in raw.split(",") if p.strip() != ""]
+    if not parts:
+        return [str(i) for i in range(n_wanted)]
+    if len(parts) < n_wanted:
+        print(
+            f"[orchestrator] 警告: CUDA_VISIBLE_DEVICES 仅有 {len(parts)} 张（{raw}），"
+            f"请求 n_gpus={n_wanted}，将只使用 {len(parts)} 个 slot"
+        )
+    return parts[:n_wanted]
 
 
 # ============================================================
@@ -116,11 +144,22 @@ def _build_perN_dataset(N):
         for _, ln in recs[-N:]:
             truncated.append(ln)
 
+    def _line_ts(ln0):
+        p = ln0.split("\t")
+        if len(p) < 4:
+            return 0.0
+        try:
+            return float(p[3])
+        except ValueError:
+            return 0.0
+
+    # 全文件按时间排序，与 prepare 的时序感一致，便于 RecBole / state dump
+    all_lines = truncated + placeholders
+    all_lines.sort(key=_line_ts)
+
     with open(dst_inter, "w", encoding="utf-8") as f:
         f.write(header)
-        for ln in truncated:
-            f.write(ln + "\n")
-        for ln in placeholders:
+        for ln in all_lines:
             f.write(ln + "\n")
 
     # 复制 .user / .item（RecBole atomic files）
@@ -152,6 +191,7 @@ def _worker_main(args):
     model_name, config_file = MODEL_CONFIGS[model_key]
 
     N = int(args.N)
+    seed = int(args.seed) if args.seed is not None else 2020
     dataset_name = _build_perN_dataset(N)
 
     # 关键：覆盖两处全局 OVERRIDES，让 run_pretrain/dump/t2t 都用 perN 子集
@@ -164,7 +204,7 @@ def _worker_main(args):
 
     _ensure_split()
 
-    ckp_dir = os.path.join(PROJ, "saved", f"per_user_pretrain_perN{N}_L{args.max_seq_len}")
+    ckp_dir = os.path.join(PROJ, "saved", f"per_user_pretrain_perN{N}_L{args.max_seq_len}_s{seed}")
     os.makedirs(ckp_dir, exist_ok=True)
     states_path = os.path.join(ckp_dir, f"user_states_{model_name}.pt")
 
@@ -183,7 +223,7 @@ def _worker_main(args):
         "dump_sec": None,
         "pretrain_epochs": pt1m.PRETRAIN_OVERRIDES.get("epochs"),
         "t2t_lr": pt1m.T2T_OVERRIDES.get("learning_rate"),
-        "seed": 2020,
+        "seed": seed,
         "stages_run": {"pretrain": False, "dump": False, "t2t": False},
     }
 
@@ -200,7 +240,7 @@ def _worker_main(args):
             ckp_path = cands[-1]
             print(f"[{model_key}/N={N}] Step A skipped, reuse {ckp_path}")
         else:
-            print(f"[{model_key}/N={N}] Step A: pretrain on {dataset_name} "
+            print(f"[{model_key}/N={N}/seed={seed}] Step A: pretrain on {dataset_name} "
                   f"({pt1m.PRETRAIN_OVERRIDES['epochs']} epochs, L={args.max_seq_len})")
             t0 = time.perf_counter()
             ckp_path = run_pretrain(
@@ -209,19 +249,20 @@ def _worker_main(args):
                 ckp_dir=ckp_dir,
                 show_progress=args.show_progress,
                 max_seq_len=args.max_seq_len,
+                seed=seed,
             )
             record["pretrain_sec"] = time.perf_counter() - t0
             record["stages_run"]["pretrain"] = True
-            print(f"[{model_key}/N={N}] Step A done in {record['pretrain_sec']:.0f}s, ckp={ckp_path}")
+            print(f"[{model_key}/N={N}/seed={seed}] Step A done in {record['pretrain_sec']:.0f}s, ckp={ckp_path}")
         record["ckp_path"] = ckp_path
         _save()
 
         # Step B: dump user_states on perN
         if not args.skip_dump:
             if os.path.isfile(states_path) and not args.force_redump:
-                print(f"[{model_key}/N={N}] Step B: reuse {states_path}")
+                print(f"[{model_key}/N={N}/seed={seed}] Step B: reuse {states_path}")
             else:
-                print(f"[{model_key}/N={N}] Step B: dump user_states")
+                print(f"[{model_key}/N={N}/seed={seed}] Step B: dump user_states")
                 t0 = time.perf_counter()
                 run_state_dump(
                     ckp_path=ckp_path,
@@ -230,14 +271,15 @@ def _worker_main(args):
                     config_file=config_file,
                     max_seq_len=args.max_seq_len,
                     show_progress=args.show_progress,
+                    seed=seed,
                 )
                 record["dump_sec"] = time.perf_counter() - t0
                 record["stages_run"]["dump"] = True
-                print(f"[{model_key}/N={N}] Step B done in {record['dump_sec']:.0f}s")
+                print(f"[{model_key}/N={N}/seed={seed}] Step B done in {record['dump_sec']:.0f}s")
 
         # Step C: streaming T2T（t2t 数据集不变，仍是 ml-1m-t2t）
         if not args.skip_t2t:
-            print(f"[{model_key}/N={N}] Step C: streaming T2T")
+            print(f"[{model_key}/N={N}/seed={seed}] Step C: streaming T2T")
             result, t_sec, mem_gb = run_t2t_from_ckp(
                 ckp_path=ckp_path,
                 show_progress=args.show_progress,
@@ -245,6 +287,7 @@ def _worker_main(args):
                 t2t_lr=args.t2t_lr,
                 max_seq_len=args.max_seq_len,
                 user_states_path=states_path if os.path.isfile(states_path) else None,
+                seed=seed,
             )
             record["result"] = {
                 k: (float(v) if v is not None else None) for k, v in (result or {}).items()
@@ -252,7 +295,7 @@ def _worker_main(args):
             record["t_sec"] = float(t_sec) if t_sec is not None else None
             record["mem_gb"] = float(mem_gb) if mem_gb is not None else None
             record["stages_run"]["t2t"] = True
-            print(f"[{model_key}/N={N}] Step C done: {record['result']}")
+            print(f"[{model_key}/N={N}/seed={seed}] Step C done: {record['result']}")
     finally:
         _save()
 
@@ -261,6 +304,9 @@ def _worker_main(args):
 # orchestrator：(model, N) 矩阵并行
 # ============================================================
 def _orchestrate(args):
+    if args.n_gpus < 1:
+        raise SystemExit("--n_gpus 必须 >= 1")
+
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = args.output_dir or os.path.join(PROJ, "experiment_results")
     os.makedirs(out_dir, exist_ok=True)
@@ -269,92 +315,154 @@ def _orchestrate(args):
 
     Ns = args.Ns or DEFAULT_NS
     models = args.models or DEFAULT_MODELS
+    seeds = args.seeds or DEFAULT_SEEDS
 
-    # 预先生成所有 perN 数据集（serial，只做 IO）
-    for N in Ns:
-        _build_perN_dataset(N)
+    olog_path = os.path.join(work_dir, "orchestrate.log")
+    olog = open(olog_path, "w", buffering=1)
 
-    # 任务矩阵
-    jobs = [(m, N) for N in Ns for m in models]
-    print(f"[orchestrator] {len(jobs)} jobs = {len(models)} models × {len(Ns)} Ns, GPUs={args.n_gpus}")
-    print(f"              Ns={Ns} models={models} work_dir={work_dir}")
+    def oprint(*a, **k):
+        print(*a, **k, flush=True)
+        print(*a, file=olog, **k, flush=True)
 
-    gpus = list(range(args.n_gpus))
-    pending = list(jobs)
-    running = {}  # gpu_id -> (job_key, Popen, out_json, log_fh, t0)
-    results = {}  # (model_key, N) -> record dict
+    try:
+        slot_cuda_ids = _visible_gpu_ids_for_children(args.n_gpus)
+        n_slots = len(slot_cuda_ids)
+        args._slot_cuda_ids = slot_cuda_ids
+        args._n_slots = n_slots
+        args._orchestrate_log = olog_path
+        args._manifest_path = None
 
-    def _launch(model_key, N, gpu_id):
-        key = f"{model_key}_N{N}"
-        out_json = os.path.join(work_dir, f"{key}.json")
-        log_path = os.path.join(work_dir, f"{key}.log")
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-        cmd = [
-            sys.executable, os.path.abspath(__file__),
-            "--worker",
-            "--model", model_key,
-            "--N", str(N),
-            "--out_json", out_json,
-            "--max_seq_len", str(args.max_seq_len),
-        ]
-        if args.epochs is not None:
-            cmd += ["--epochs", str(args.epochs)]
-        if args.t2t_lr is not None:
-            cmd += ["--t2t_lr", str(args.t2t_lr)]
-        if args.show_progress:
-            cmd += ["--show_progress"]
-        if args.skip_pretrain:
-            cmd += ["--skip_pretrain"]
-        if args.skip_dump:
-            cmd += ["--skip_dump"]
-        if args.skip_t2t:
-            cmd += ["--skip_t2t"]
-        if args.force_redump:
-            cmd += ["--force_redump"]
-        log_fh = open(log_path, "w", buffering=1)
-        print(f"[launch] {key} on GPU {gpu_id}  -> log={log_path}")
-        p = subprocess.Popen(cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT)
-        running[gpu_id] = ((model_key, N), p, out_json, log_fh, time.time())
+        if n_slots < args.n_gpus:
+            oprint(
+                f"[orchestrator] 将 n_gpus 从 {args.n_gpus} 减为 {n_slots}"
+                f"（与可见 GPU 一致: {slot_cuda_ids}）"
+            )
 
-    while pending or running:
-        for gpu_id in gpus:
-            if gpu_id not in running and pending:
-                mk, N = pending.pop(0)
-                _launch(mk, N, gpu_id)
-        time.sleep(10)
-        done = []
-        for gpu_id, ((mk, N), p, out_json, log_fh, t0) in list(running.items()):
-            rc = p.poll()
-            if rc is not None:
-                log_fh.close()
-                elapsed = time.time() - t0
-                key = (mk, N)
-                if rc == 0 and os.path.isfile(out_json):
-                    with open(out_json, encoding="utf-8") as f:
-                        results[key] = json.load(f)
-                    print(f"[done] {mk}/N={N} GPU {gpu_id} rc=0 elapsed={elapsed:.0f}s")
-                else:
-                    print(f"[FAIL] {mk}/N={N} GPU {gpu_id} rc={rc} elapsed={elapsed:.0f}s  log={out_json.replace('.json','.log')}")
-                    if os.path.isfile(out_json):
-                        try:
-                            with open(out_json, encoding="utf-8") as f:
-                                results[key] = json.load(f)
-                        except Exception:
-                            results[key] = None
+        # 预先生成所有 perN 数据集（serial，只做 IO；避免多 worker 同时写同一路径）
+        for N in Ns:
+            _build_perN_dataset(N)
+
+        manifest = os.path.join(work_dir, "00_manifest.txt")
+        args._manifest_path = manifest
+        with open(manifest, "w", encoding="utf-8") as mf:
+            mf.write("=== Pretrain (perN) + streaming T2T (ml-1m) ===\n")
+            mf.write(f"start     = {datetime.now().isoformat()}\n")
+            mf.write(f"work_dir  = {work_dir}\n")
+            mf.write(f"run_id    = {run_id}\n")
+            mf.write(f"argv      = {sys.argv}\n")
+            mf.write(
+                f"host CUDA = {os.environ.get('CUDA_VISIBLE_DEVICES', '(unset)')}\n"
+            )
+            mf.write(f"slot GPUs = {slot_cuda_ids}\n")
+            mf.write(f"Ns        = {Ns}  (each >= {MIN_N})\n")
+            mf.write(f"models    = {models}\n")
+            mf.write(f"seeds     = {seeds}\n")
+            mf.write(f"L epochs  = {args.max_seq_len}, {args.epochs or 150}\n")
+            mf.write(f"orchestrate.log = {olog_path}\n")
+
+        # 任务矩阵
+        jobs = [(m, N, s) for N in Ns for m in models for s in seeds]
+        oprint(
+            f"[orchestrator] {len(jobs)} jobs = {len(models)} models × {len(Ns)} Ns × {len(seeds)} seeds, "
+            f"{n_slots} slot(s)"
+        )
+        oprint(f"              Ns={Ns} models={models} seeds={seeds} work_dir={work_dir}")
+        oprint(f"[orchestrator] manifest -> {manifest}")
+
+        gpus = list(range(n_slots))
+        pending = list(jobs)
+        running = {}  # slot_idx -> ...
+        results = {}  # (model_key, N, seed) -> record dict
+
+        def _launch(model_key, N, seed, slot_idx):
+            key = f"{model_key}_N{N}_s{seed}"
+            cuda_id = slot_cuda_ids[slot_idx]
+            out_json = os.path.join(work_dir, f"{key}.json")
+            log_path = os.path.join(work_dir, f"{key}.log")
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(cuda_id)
+            cmd = [
+                sys.executable, os.path.abspath(__file__),
+                "--worker",
+                "--model", model_key,
+                "--N", str(N),
+                "--seed", str(seed),
+                "--out_json", out_json,
+                "--max_seq_len", str(args.max_seq_len),
+            ]
+            if args.epochs is not None:
+                cmd += ["--epochs", str(args.epochs)]
+            if args.t2t_lr is not None:
+                cmd += ["--t2t_lr", str(args.t2t_lr)]
+            if args.show_progress:
+                cmd += ["--show_progress"]
+            if args.skip_pretrain:
+                cmd += ["--skip_pretrain"]
+            if args.skip_dump:
+                cmd += ["--skip_dump"]
+            if args.skip_t2t:
+                cmd += ["--skip_t2t"]
+            if args.force_redump:
+                cmd += ["--force_redump"]
+            log_fh = open(log_path, "w", buffering=1)
+            cmd_txt = os.path.join(work_dir, f"{key}_cmd.txt")
+            with open(cmd_txt, "w", encoding="utf-8") as cf:
+                cf.write(
+                    " ".join(f'"{c}"' if " " in c else c for c in cmd) + "\n"
+                )
+                cf.write(f"CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']}\n")
+            oprint(
+                f"[launch] {key} CUDA={env['CUDA_VISIBLE_DEVICES']} (slot {slot_idx}) -> {log_path}"
+            )
+            p = subprocess.Popen(cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT)
+            running[slot_idx] = ((model_key, N, seed), p, out_json, log_fh, time.time(), str(cuda_id))
+
+        while pending or running:
+            for slot_idx in gpus:
+                if slot_idx not in running and pending:
+                    mk, N, sd = pending.pop(0)
+                    _launch(mk, N, sd, slot_idx)
+            time.sleep(10)
+            done = []
+            for slot_idx, ((mk, N, sd), p, out_json, log_fh, t0, cuda_s) in list(running.items()):
+                rc = p.poll()
+                if rc is not None:
+                    log_fh.close()
+                    elapsed = time.time() - t0
+                    key = (mk, N, sd)
+                    if rc == 0 and os.path.isfile(out_json):
+                        with open(out_json, encoding="utf-8") as f:
+                            results[key] = json.load(f)
+                        oprint(
+                            f"[done] {mk}/N={N}/seed={sd} CUDA {cuda_s} (slot {slot_idx})"
+                            f" rc=0 elapsed={elapsed:.0f}s"
+                        )
                     else:
-                        results[key] = None
-                done.append(gpu_id)
-        for g in done:
-            del running[g]
+                        oprint(
+                            f"[FAIL] {mk}/N={N}/seed={sd} (slot {slot_idx}) rc={rc}"
+                            f" elapsed={elapsed:.0f}s  see {out_json.replace('.json', '.log')}"
+                        )
+                        if os.path.isfile(out_json):
+                            try:
+                                with open(out_json, encoding="utf-8") as f:
+                                    results[key] = json.load(f)
+                            except Exception:
+                                results[key] = None
+                        else:
+                            results[key] = None
+                    done.append(slot_idx)
+            for s in done:
+                del running[s]
 
-    _aggregate(args, models, Ns, results, work_dir, run_id, out_dir)
+        _aggregate(args, models, Ns, seeds, results, work_dir, run_id, out_dir)
+    finally:
+        olog.close()
 
 
 # ============================================================
 # 汇总
 # ============================================================
-def _aggregate(args, models, Ns, results, work_dir, run_id, out_dir):
+def _aggregate(args, models, Ns, seeds, results, work_dir, run_id, out_dir):
     txt_path = os.path.join(out_dir, f"per_user_pretrain_streaming_L{args.max_seq_len}_{run_id}.txt")
     csv_path = os.path.join(out_dir, f"per_user_pretrain_streaming_L{args.max_seq_len}_{run_id}.csv")
 
@@ -367,10 +475,45 @@ def _aggregate(args, models, Ns, results, work_dir, run_id, out_dir):
             s = str(v)
         return s.ljust(width) if width else s
 
-    any_ok = next((r for r in results.values() if r), None)
-    seed = any_ok.get("seed", 2020) if any_ok else 2020
+    def _collect(m, N, key):
+        """收集 (m,N) 在所有 seed 下的指标值，过滤 None。"""
+        vals = []
+        for s in seeds:
+            r = results.get((m, N, s))
+            v = None if r is None else r.get("result", {}).get(key)
+            if v is not None:
+                vals.append(float(v))
+        return vals
 
-    label_w, col_w, delta_w = 10, 12, 14
+    def _collect_field(m, N, field):
+        vals = []
+        for s in seeds:
+            r = results.get((m, N, s))
+            v = None if r is None else r.get(field)
+            if v is not None:
+                vals.append(float(v))
+        return vals
+
+    def _mean_std(vals):
+        if not vals:
+            return None, None
+        n = len(vals)
+        mean = sum(vals) / n
+        if n < 2:
+            return mean, None
+        var = sum((x - mean) ** 2 for x in vals) / (n - 1)
+        return mean, var ** 0.5
+
+    def fmt_ms(mean, std, prec=4, width=None):
+        if mean is None:
+            s = "N/A"
+        elif std is None:
+            s = f"{mean:.{prec}f}"
+        else:
+            s = f"{mean:.{prec}f}±{std:.{prec}f}"
+        return s.ljust(width) if width else s
+
+    label_w, col_w, delta_w = 10, 22, 14
 
     lines = []
     lines.append("=" * 100)
@@ -406,47 +549,88 @@ def _aggregate(args, models, Ns, results, work_dir, run_id, out_dir):
     lines.append(f"  pretrain_epochs       = {args.epochs or 150}  (早停 stopping_step=10)")
     lines.append(f"  t2t_lr                = {args.t2t_lr or 1e-4}")
     lines.append(f"  t2t_test_ratio        = 0.1")
-    lines.append(f"  random seed           = {seed}  (单 seed 单次运行)")
+    lines.append(f"  seeds                 = {seeds}  ({len(seeds)} seed{'s' if len(seeds) > 1 else ''})")
     lines.append("")
     lines.append("[运行信息]")
     lines.append(f"  run_id   = {run_id}")
     lines.append(f"  work_dir = {work_dir}")
+    n_sl = getattr(args, "_n_slots", None)
+    sids = getattr(args, "_slot_cuda_ids", None)
+    if n_sl is not None and sids is not None:
+        lines.append(f"  parallel = {n_sl} slot(s), CUDA per worker = {sids}")
+    man = getattr(args, "_manifest_path", None)
+    olp = getattr(args, "_orchestrate_log", None)
+    if man:
+        lines.append(f"  manifest = {man}")
+    if olp:
+        lines.append(f"  orchestrate.log = {olp}")
     lines.append("")
 
     # ------------------------------------------------------------
-    # TEST 主表：指标 × (模型, N) + Δ(Adam-GDN) + Δ(Fro-GDN)
+    # TEST 主表：指标 × (模型, N) + 可选 Δ(Adam-GDN) / Δ(Fro-GDN)
     # ------------------------------------------------------------
     def _delta_pct(adv, base):
         if adv is None or base is None or base == 0:
             return None
         return (adv - base) / base * 100.0
 
+    have_gdn = "GDN" in models
+    show_d_adam = have_gdn and "Adam" in models
+    show_d_fro = have_gdn and "Fro" in models
+
     lines.append("-" * 100)
-    lines.append("TEST (streaming T2T)  —  每指标按 N 排行，附 Δ% 相对 GDN")
+    lines.append("TEST (streaming T2T)  —  每指标按 N 排行，附可选 Δ% 相对 GDN")
     lines.append("-" * 100)
 
     for mk in METRIC_KEYS:
-        lines.append(f"  Metric: {mk}")
-        header = ("N".ljust(label_w)
-                  + "".join(m.ljust(col_w) for m in models)
-                  + "Δ(Adam-GDN)".ljust(delta_w)
-                  + "Δ(Fro-GDN)".ljust(delta_w))
+        lines.append(f"  Metric: {mk}  (mean ± std 跨 {len(seeds)} seed)")
+        header = "N".ljust(label_w) + "".join(m.ljust(col_w) for m in models)
+        if show_d_adam:
+            header += "Δ(Adam-GDN)".ljust(delta_w)
+        if show_d_fro:
+            header += "Δ(Fro-GDN)".ljust(delta_w)
         lines.append(header)
-        lines.append("-" * (label_w + col_w * len(models) + delta_w * 2))
+        n_extra = (1 if show_d_adam else 0) + (1 if show_d_fro else 0)
+        lines.append("-" * (label_w + col_w * len(models) + delta_w * n_extra))
         for N in Ns:
             row = f"N={N}".ljust(label_w)
-            vals = {}
+            means = {}
             for m in models:
-                r = results.get((m, N))
-                v = None if r is None else r.get("result", {}).get(mk)
-                vals[m] = v
-                row += fmt(v, col_w)
-            d_adam = _delta_pct(vals.get("Adam"), vals.get("GDN"))
-            d_fro = _delta_pct(vals.get("Fro"), vals.get("GDN"))
-            row += (f"{d_adam:+.1f}%" if d_adam is not None else "N/A").ljust(delta_w)
-            row += (f"{d_fro:+.1f}%" if d_fro is not None else "N/A").ljust(delta_w)
+                vals = _collect(m, N, mk)
+                mean, std = _mean_std(vals)
+                means[m] = mean
+                row += fmt_ms(mean, std, prec=4, width=col_w)
+            if show_d_adam:
+                d_adam = _delta_pct(means.get("Adam"), means.get("GDN"))
+                row += (f"{d_adam:+.1f}%" if d_adam is not None else "N/A").ljust(
+                    delta_w
+                )
+            if show_d_fro:
+                d_fro = _delta_pct(means.get("Fro"), means.get("GDN"))
+                row += (f"{d_fro:+.1f}%" if d_fro is not None else "N/A").ljust(
+                    delta_w
+                )
             lines.append(row)
         lines.append("")
+
+    # per-seed 详表
+    lines.append("-" * 100)
+    lines.append(f"Per-seed 明细 (recall@10)  —  检查方差/异常 seed")
+    lines.append("-" * 100)
+    pshdr = "N_model".ljust(label_w + 6)
+    for s in seeds:
+        pshdr += f"seed={s}".ljust(col_w)
+    lines.append(pshdr)
+    lines.append("-" * (label_w + 6 + col_w * len(seeds)))
+    for N in Ns:
+        for m in models:
+            row = f"N={N}/{m}".ljust(label_w + 6)
+            for s in seeds:
+                r = results.get((m, N, s))
+                v = None if r is None else r.get("result", {}).get("recall@10")
+                row += fmt(v, col_w)
+            lines.append(row)
+    lines.append("")
 
     # ------------------------------------------------------------
     # 耗时 / 显存
@@ -458,16 +642,16 @@ def _aggregate(args, models, Ns, results, work_dir, run_id, out_dir):
     for field, label, prec in [("pretrain_sec", "pretrain(s)", 0),
                                  ("t_sec",        "t2t(s)",      0),
                                  ("mem_gb",       "mem(GB)",    2)]:
-        lines.append(f"  {label}")
+        lines.append(f"  {label} (mean 跨 seed)")
         header = "N".ljust(label_w) + "".join(m.ljust(col_w) for m in models)
         lines.append(header)
         lines.append("-" * (label_w + col_w * len(models)))
         for N in Ns:
             row = f"N={N}".ljust(label_w)
             for m in models:
-                r = results.get((m, N))
-                v = None if r is None else r.get(field)
-                row += fmt(v, col_w, prec=prec)
+                vals = _collect_field(m, N, field)
+                mean, _ = _mean_std(vals)
+                row += fmt(mean, col_w, prec=prec)
             lines.append(row)
         lines.append("")
 
@@ -476,7 +660,7 @@ def _aggregate(args, models, Ns, results, work_dir, run_id, out_dir):
     lines.append("    N 越小 → Δ(Adam-GDN) 越大，且 Δ>0 稳定")
     lines.append("  若全部 Δ ≈ 0  → streaming 协议下 ml-1m 无法分辨方法，需换数据集（Amazon Beauty）")
     lines.append("  若 Δ 随机起伏 → 单 seed 噪声，需补 multi-seed 取均值")
-    lines.append("  若 N=5/10 Δ 严重为负 → Adam 在超短序列下可能有 chunk/CHUNK_SIZE 边界问题，需 debug")
+    lines.append("  若 N=10 仍 Δ 严重为负 → Adam 在极短序列下可能有 chunk/CHUNK_SIZE 边界问题，需 debug")
     lines.append("=" * 100)
 
     table = "\n".join(lines)
@@ -492,20 +676,21 @@ def _aggregate(args, models, Ns, results, work_dir, run_id, out_dir):
         f.write(",".join(csv_cols) + "\n")
         for N in Ns:
             for m in models:
-                r = results.get((m, N))
-                if r is None:
-                    f.write(f"{m},{N}," + ",".join(["N/A"] * (len(csv_cols) - 2)) + "\n")
-                    continue
-                parts = [m, str(N), str(r.get("seed") or "N/A")]
-                parts.append(f"{r.get('pretrain_sec'):.2f}" if r.get("pretrain_sec") is not None else "N/A")
-                parts.append(f"{r.get('t_sec'):.2f}" if r.get("t_sec") is not None else "N/A")
-                parts.append(f"{r.get('mem_gb'):.2f}" if r.get("mem_gb") is not None else "N/A")
-                for k in METRIC_KEYS_FULL:
-                    v = r.get("result", {}).get(k)
-                    parts.append(f"{v:.4f}" if v is not None else "N/A")
-                parts.append(str(r.get("ckp_path") or ""))
-                parts.append(str(r.get("states_path") or ""))
-                f.write(",".join(parts) + "\n")
+                for s in seeds:
+                    r = results.get((m, N, s))
+                    if r is None:
+                        f.write(f"{m},{N},{s}," + ",".join(["N/A"] * (len(csv_cols) - 3)) + "\n")
+                        continue
+                    parts = [m, str(N), str(r.get("seed", s))]
+                    parts.append(f"{r.get('pretrain_sec'):.2f}" if r.get("pretrain_sec") is not None else "N/A")
+                    parts.append(f"{r.get('t_sec'):.2f}" if r.get("t_sec") is not None else "N/A")
+                    parts.append(f"{r.get('mem_gb'):.2f}" if r.get("mem_gb") is not None else "N/A")
+                    for k in METRIC_KEYS_FULL:
+                        v = r.get("result", {}).get(k)
+                        parts.append(f"{v:.4f}" if v is not None else "N/A")
+                    parts.append(str(r.get("ckp_path") or ""))
+                    parts.append(str(r.get("states_path") or ""))
+                    f.write(",".join(parts) + "\n")
     print(f"CSV: {csv_path}")
 
 
@@ -513,10 +698,14 @@ def _aggregate(args, models, Ns, results, work_dir, run_id, out_dir):
 # CLI
 # ============================================================
 def _parse_csv_int(s):
+    if s is None:
+        return None
     return [int(x) for x in s.split(",") if x.strip()]
 
 
 def _parse_csv_str(s):
+    if s is None:
+        return None
     return [x.strip() for x in s.split(",") if x.strip()]
 
 
@@ -525,9 +714,11 @@ def main():
         description="Pretrain-lite (per-user last N) + Streaming T2T on ml-1m，双卡并行"
     )
     parser.add_argument("--Ns", type=_parse_csv_int, default=None,
-                        help=f"每 user 保留的历史长度，逗号分隔，默认 {DEFAULT_NS}")
+                        help=f"每 user 保留的历史长度，逗号分隔，默认 {DEFAULT_NS}；每项须 >= {MIN_N}")
     parser.add_argument("--models", type=_parse_csv_str, default=None,
                         help=f"模型子集，逗号分隔，默认 {DEFAULT_MODELS} (Adam=DamRec, Fro=FroRec)")
+    parser.add_argument("--seeds", type=_parse_csv_int, default=None,
+                        help=f"随机 seed 列表，逗号分隔，默认 {DEFAULT_SEEDS}")
     parser.add_argument("-L", "--max_seq_len", type=int, default=64,
                         help="序列长度 L，默认 64（CHUNK_SIZE=16 兼容）")
     parser.add_argument("--epochs", type=int, default=None,
@@ -548,7 +739,14 @@ def main():
     # Worker
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--model", type=str, default=None)
-    parser.add_argument("--N", type=int, default=None)
+    parser.add_argument(
+        "--N",
+        type=int,
+        default=None,
+        help=f"worker：每用户保留真实交互数，须 >= {MIN_N}",
+    )
+    parser.add_argument("--seed", type=int, default=None,
+                        help="worker：本次运行 seed")
     parser.add_argument("--out_json", type=str, default=None)
 
     args = parser.parse_args()
@@ -556,8 +754,24 @@ def main():
     if args.worker:
         if args.model is None or args.N is None or args.out_json is None:
             raise SystemExit("--worker 模式需要 --model --N --out_json")
+        if int(args.N) < MIN_N:
+            raise SystemExit(f"--N 必须 >= {MIN_N}（过小易导致 batch/序列长度过短而不稳定）")
         _worker_main(args)
     else:
+        import run_pretrain_t2t_1m as _pt1m
+        mlist = args.models or DEFAULT_MODELS
+        bad = [m for m in mlist if m not in _pt1m.MODEL_CONFIGS]
+        if bad:
+            raise SystemExit(
+                f"Unknown --models: {bad}. Valid: {list(_pt1m.MODEL_CONFIGS.keys())}"
+            )
+        nsl = args.Ns or DEFAULT_NS
+        if not nsl:
+            raise SystemExit("--Ns 不能为空")
+        if any(int(n) < MIN_N for n in nsl):
+            raise SystemExit(
+                f"--Ns 中每项须 >= {MIN_N}（过小易导致 batch/序列长度过短而不稳定）"
+            )
         _orchestrate(args)
 
 

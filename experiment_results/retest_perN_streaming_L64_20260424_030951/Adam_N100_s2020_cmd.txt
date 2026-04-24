@@ -1,0 +1,2 @@
+/venv/main/bin/python /root/DamRec/scripts/retest_perN_streaming_t2t_1m.py --worker --model Adam --N 100 --seed 2020 --out_json /root/DamRec/experiment_results/retest_perN_streaming_L64_20260424_030951/Adam_N100_s2020.json --max_seq_len 64
+CUDA_VISIBLE_DEVICES=0

@@ -1,0 +1,27 @@
+# GDN (ml-1m) — 全库按时间戳排序后比例切分（group_by: none = 总体一刀切）
+# 训练超参与非流式 run_non_streaming_experiments_1m 中 GDN 一致；仅 eval_args 改为 RS+TO+group_by none。
+# 对照: sequential_GDN.yaml 为 LS 留一；本文件为与流式 80/20 窗口可比的全局时间带切分（比例可调）。
+
+dataset: ml-1m
+MAX_ITEM_LIST_LENGTH: 128
+embedding_size: 64
+streaming_mode: False
+dropout_prob: 0.2
+use_fla: True
+train_neg_sample_args: ~
+
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  order: TO
+  group_by: none
+  mode: full
+
+repeatable: True
+train_batch_size: 4096
+eval_batch_size: 2048
+epochs: 150
+stopping_step: 10
+learning_rate: 0.001
+
+topk: [5, 10, 20, 50]
+metrics: ['Recall', 'MRR', 'NDCG', 'Hit', 'Precision']

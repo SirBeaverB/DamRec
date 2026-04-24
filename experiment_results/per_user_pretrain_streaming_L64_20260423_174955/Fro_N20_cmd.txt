@@ -1,0 +1,2 @@
+/venv/main/bin/python /root/DamRec/scripts/run_pretrain_perN_streaming_t2t_1m.py --worker --model Fro --N 20 --out_json /root/DamRec/experiment_results/per_user_pretrain_streaming_L64_20260423_174955/Fro_N20.json --max_seq_len 64
+CUDA_VISIBLE_DEVICES=0

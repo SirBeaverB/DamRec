@@ -1,0 +1,28 @@
+{
+  "model": "Fro",
+  "model_name": "FroRec",
+  "N": 50,
+  "dataset": "ml-1m-pretrain-per50",
+  "ckp_dir": "/root/DamRec/saved/per_user_pretrain_perN50_L64",
+  "ckp_path": "/root/DamRec/saved/per_user_pretrain_perN50_L64/FroRec-Apr-23-2026_18-38-05.pth",
+  "states_path": "/root/DamRec/saved/per_user_pretrain_perN50_L64/user_states_FroRec.pt",
+  "result": {
+    "recall@10": 0.01,
+    "mrr@10": 0.0027,
+    "ndcg@10": 0.0044,
+    "hit@10": 0.01,
+    "precision@10": 0.001
+  },
+  "t_sec": 46.158151851035655,
+  "mem_gb": 2.9379210472106934,
+  "pretrain_sec": 1023.9366933279671,
+  "dump_sec": 162.9632194021251,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "seed": 2020,
+  "stages_run": {
+    "pretrain": true,
+    "dump": true,
+    "t2t": true
+  }
+}

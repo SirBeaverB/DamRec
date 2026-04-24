@@ -45,6 +45,15 @@ class FroRec(SequentialRecommender):
         self.adam_beta2 = config["adam_beta2"] if config["adam_beta2"] is not None else 0.999
         self.adam_eps = config["adam_eps"] if config["adam_eps"] is not None else 1e-8
         self.adam_eta = config["adam_eta"] if config["adam_eta"] is not None else 0.1
+        # 消融开关：默认 FroRec = M+V；FroRecNoV 等子类在构造前设为 False 以关闭 V
+        self.use_first_moment = bool(getattr(self, "use_first_moment", True))
+        self.use_second_moment = bool(getattr(self, "use_second_moment", True))
+        ufm = config["use_first_moment"]
+        usm = config["use_second_moment"]
+        if ufm is not None:
+            self.use_first_moment = bool(ufm)
+        if usm is not None:
+            self.use_second_moment = bool(usm)
 
         self.item_embedding = nn.Embedding(
             self.n_items, self.embedding_size, padding_idx=0
@@ -62,6 +71,8 @@ class FroRec(SequentialRecommender):
                 adam_beta2=self.adam_beta2,
                 adam_eps=self.adam_eps,
                 adam_eta=self.adam_eta,
+                use_first_moment=self.use_first_moment,
+                use_second_moment=self.use_second_moment,
             )
             for _ in range(self.n_layers)
         ])
@@ -78,8 +89,9 @@ class FroRec(SequentialRecommender):
         self._streaming_state = {}
 
         self.logger.info(
-            "[FroRec] F-Adam (β1=%.2f, β2=%.3f, η=%.2f), requires FLA+CUDA"
-            % (self.adam_beta1, self.adam_beta2, self.adam_eta)
+            "[FroRec] F-Adam (β1=%.2f, β2=%.3f, η=%.2f) use_M=%s use_V=%s, requires FLA+CUDA"
+            % (self.adam_beta1, self.adam_beta2, self.adam_eta,
+               self.use_first_moment, self.use_second_moment)
         )
 
     def _init_weights(self, module):

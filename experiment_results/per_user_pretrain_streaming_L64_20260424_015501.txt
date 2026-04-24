@@ -1,0 +1,94 @@
+====================================================================================================
+Pretrain-lite (per-user last N) + Streaming T2T on ml-1m
+====================================================================================================
+
+[实验情景]
+  从 ml-1m-pretrain 派生 ml-1m-pretrain-perN：每 user 按 timestamp 保留最后 N 条真实交互；
+  所有 rating=0 占位行保留以维持 vocab 一致。
+  每个模型在 perN 子集上独立预训练（150 epoch，非嫁接），末态 dump per-user (S,M,V)。
+  Streaming T2T 阶段在原始 ml-1m-t2t（最后 20% 真实交互）上 prequential 评估。
+
+[研究问题]
+  预训练期 per-user 历史越稀疏（N 越小），streaming 阶段 Adam 式 (DamRec/FroRec)
+  相对 SGD (GDN) 的优势是否越大？若 Δ(Adam-GDN) 随 N 递减单调上升，
+  则支撑 paper 的「streaming 场景下自适应预条件子在稀疏 per-user 数据下更 sample-efficient」论点。
+
+[评估协议] Prequential streaming (Gama et al., 2009)
+  每 user 的 t2t 尾部 10% 为 test 点：到达 test 点先 full_sort_predict → 记录 Recall/NDCG/MRR；
+  整个 batch（含 test 点）参与 loss.backward() 模拟在线反馈；per-user S/M/V 持续演化不重置。
+  与 per_model_streaming 脚本的区别：本实验 pretrain 与 streaming_pretrain_dataset 均为 perN，
+  即 streaming 阶段的 user_history 只含 pretrain 末尾 N 条，而非原 80%。
+
+[模型对照]
+  GDN  = Gated Delta Net   (一阶 SGD 基线)
+  Adam = DamRec             (Adam 式，秩一分解 V_r⊙V_k^T)
+  Fro  = FroRec             (F-Adam，V 降维为 Frobenius 标量)
+
+[超参数]
+  N levels              = [100]
+  models                = ['GDN', 'Adam', 'Fro']
+  max_seq_len L         = 64
+  pretrain_epochs       = 150  (早停 stopping_step=10)
+  t2t_lr                = 0.0001
+  t2t_test_ratio        = 0.1
+  seeds                 = [2021, 2022]  (2 seeds)
+
+[运行信息]
+  run_id   = 20260424_015501
+  work_dir = /root/DamRec/experiment_results/per_user_pretrain_streaming_L64_20260424_015501
+  parallel = 2 slot(s), CUDA per worker = ['0', '1']
+  manifest = /root/DamRec/experiment_results/per_user_pretrain_streaming_L64_20260424_015501/00_manifest.txt
+  orchestrate.log = /root/DamRec/experiment_results/per_user_pretrain_streaming_L64_20260424_015501/orchestrate.log
+
+----------------------------------------------------------------------------------------------------
+TEST (streaming T2T)  —  每指标按 N 排行，附可选 Δ% 相对 GDN
+----------------------------------------------------------------------------------------------------
+  Metric: recall@10  (mean ± std 跨 2 seed)
+N         GDN                   Adam                  Fro                   Δ(Adam-GDN)   Δ(Fro-GDN)    
+--------------------------------------------------------------------------------------------------------
+N=100     0.0114±0.0006         0.0100±0.0001         0.0106±0.0006         -12.7%        -7.5%         
+
+  Metric: ndcg@10  (mean ± std 跨 2 seed)
+N         GDN                   Adam                  Fro                   Δ(Adam-GDN)   Δ(Fro-GDN)    
+--------------------------------------------------------------------------------------------------------
+N=100     0.0050±0.0004         0.0046±0.0000         0.0049±0.0001         -8.9%         -4.0%         
+
+  Metric: mrr@10  (mean ± std 跨 2 seed)
+N         GDN                   Adam                  Fro                   Δ(Adam-GDN)   Δ(Fro-GDN)    
+--------------------------------------------------------------------------------------------------------
+N=100     0.0032±0.0003         0.0030±0.0000         0.0032±0.0001         -6.2%         -1.6%         
+
+----------------------------------------------------------------------------------------------------
+Per-seed 明细 (recall@10)  —  检查方差/异常 seed
+----------------------------------------------------------------------------------------------------
+N_model         seed=2021             seed=2022             
+------------------------------------------------------------
+N=100/GDN       0.0118                0.0110                
+N=100/Adam      0.0099                0.0100                
+N=100/Fro       0.0110                0.0101                
+
+----------------------------------------------------------------------------------------------------
+pretrain_sec / t2t_sec / peak_mem_gb
+----------------------------------------------------------------------------------------------------
+  pretrain(s) (mean 跨 seed)
+N         GDN                   Adam                  Fro                   
+----------------------------------------------------------------------------
+N=100     1020                  2122                  2061                  
+
+  t2t(s) (mean 跨 seed)
+N         GDN                   Adam                  Fro                   
+----------------------------------------------------------------------------
+N=100     33                    168                   65                    
+
+  mem(GB) (mean 跨 seed)
+N         GDN                   Adam                  Fro                   
+----------------------------------------------------------------------------
+N=100     2.69                  3.49                  2.94                  
+
+[判读]
+  支撑假设（Adam sample-efficient in sparse per-user regime）：
+    N 越小 → Δ(Adam-GDN) 越大，且 Δ>0 稳定
+  若全部 Δ ≈ 0  → streaming 协议下 ml-1m 无法分辨方法，需换数据集（Amazon Beauty）
+  若 Δ 随机起伏 → 单 seed 噪声，需补 multi-seed 取均值
+  若 N=10 仍 Δ 严重为负 → Adam 在极短序列下可能有 chunk/CHUNK_SIZE 边界问题，需 debug
+====================================================================================================

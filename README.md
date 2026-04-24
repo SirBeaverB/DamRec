@@ -62,6 +62,9 @@ loss目前算的是总值，有些虚高，除batchsize之后是看上去比较�
 | `python scripts/run_non_streaming_experiments_1m.py -L 64` | ml-1m，L=64，五模型 |
 | `python scripts/run_non_streaming_experiments_1m.py -L 64 --saved` | 同上，并保存 checkpoint |
 | `python scripts/run_baseline_experiments_1m.py` | SASRec、LinRec、GRU4Rec、LightSANs（与 non_streaming 同配置） |
+| `python scripts/run_sequential_1m_global_time_cut.py --model GDN` 或 `--model GRU4Rec` | **单表 ml-1m 离线** RS 一刀切段，**不是** 下面「二、T2T」的 80% pretrain + 20% 数据 |
+| `python scripts/run_gru4rec_1m_global_time_cut.py` | 同上，**仅 GRU4Rec**（便捷别名） |
+| `python scripts/run_pretrain_t2t_1m.py --mode full --model GRU4Rec` | **前 80% 预训 + 后 20% 流式 T2T**（`ml-1m-pretrain` / `ml-1m-t2t`）；GRU4Rec 无 `user_states` 导出 |
 
 **Per-user 历史长度扫描（ml-1m，非流式 leave-one-out）**：将每用户交互截断为按时间**最近 N 条**（默认 N=10/50/100），跑 **GDN / DamRec（CLI 名 Adam）/ FroRec（Fro）**；默认**双卡并行**（`--n_gpus 2`）。**跑完后终端即打印汇总表**，并写出结果文件。
 
@@ -119,6 +122,10 @@ python scripts/run_t2t_from_ckp_unified.py --ckp saved/gdn_pretrain_t2t_unified_
 ```bash
 # 同模型
 python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/pretrain_t2t_1m/GDN-xxx.pth
+
+# 80% 预训 + 20% 流式 T2T，仅跑 GRU4Rec（与 GDN 同一数据划分与脚本）
+python scripts/prepare_ml1m_80_20_split.py   # 若尚未准备
+python scripts/run_pretrain_t2t_1m.py --mode full --model GRU4Rec
 
 # 嫁接：用 GDN 权重热启动 DamRec
 python scripts/run_pretrain_t2t_1m.py --mode t2t --ckp saved/GDN-xxx.pth --model DamRec
@@ -186,6 +193,69 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_per_model_pretrain_t2t_1m.py \
 - 单模型占用显存约 3GB（DamRec 最高），双卡并行各自独立，不会相互挤占。
 - `--show_progress` 在双卡并行下会导致 tqdm 日志穿插，调试时再开。
 - 输出的 TXT 为单 seed feasibility 结果；正式论文需 3~5 seed 批量聚合（CSV 列已预留 `seed` 字段）。
+
+#### 场景 H：per-N 短历史预训练 + 流式 T2T（稀疏 per-user 历史）
+
+从 `ml-1m-pretrain` 派生 **每用户只保留时间序上最近 N 条真实交互** 的 `ml-1m-pretrain-perN`（`rating=0` 占位行全保留以维持与全量 pretrain 一致的词表），在 **perN 子集上独立预训练** → **dump `user_states_{MODEL}.pt`** → 仍在未截断的 **`ml-1m-t2t`** 上做 **streaming T2T**（与场景 G 的流式协议相同，但预训练所见的 per-user 历史更短）。用于观察：N 变小时，流式阶段 Adam 系相对 GDN 的 Δ% 是否放大。
+
+- **默认 N=10,20,50,100**；脚本要求 **N≥10**（过小的 N 有效序列过短，配合较大 train batch 等易导致优化/统计不稳定，故不设默认 5）。
+- **多 seed 支持**（`--seeds`）：同一 (model, N) 在不同 seed 下独立跑，汇总表给 mean ± std；ckp/state 按 seed 隔离到 `saved/per_user_pretrain_perN{N}_L{L}_s{seed}/`。
+- **前置**（同场景 G）：`python scripts/prepare_ml1m_80_20_split.py`
+
+| 命令 | 说明 |
+|------|------|
+| `python scripts/run_pretrain_perN_streaming_t2t_1m.py --Ns 100 --models GDN,Fro --seeds 2020,2021,2022 --n_gpus 2` | **推荐：Fro vs GDN 稳定性验证**（N=100、3 seed、双卡，≈1 小时 wall） |
+| `python scripts/run_pretrain_perN_streaming_t2t_1m.py` | 默认 4 档 N × GDN/Adam/Fro × seed=2020、双卡并行 |
+| `python scripts/run_pretrain_perN_streaming_t2t_1m.py --Ns 20,50,100` | 只扫部分 N（逗号分隔，每项 ≥10） |
+| `python scripts/run_pretrain_perN_streaming_t2t_1m.py --models GDN,Adam` | 只跑部分模型 |
+| `python scripts/run_pretrain_perN_streaming_t2t_1m.py --seeds 2020,2021,2022` | 多 seed 扫，汇总表给 mean ± std |
+| `python scripts/run_pretrain_perN_streaming_t2t_1m.py -L 64 --t2t_lr 5e-5` | 改 L 与流式学习率（默认 1e-4） |
+| `python scripts/run_pretrain_perN_streaming_t2t_1m.py --n_gpus 1` | 单卡顺序跑满任务矩阵 |
+| `CUDA_VISIBLE_DEVICES=0 python scripts/run_pretrain_perN_streaming_t2t_1m.py --worker --model Adam --N 20 --seed 2020 --out_json /tmp/a.json` | 单 (model, N, seed) 调试用 worker |
+
+**产物**：
+
+- `experiment_results/per_user_pretrain_streaming_L{L}_{timestamp}.txt`（主表 mean ± std + per-seed 明细 + 耗时/显存） / 同名 `.csv`（每 (model, N, seed) 一行）
+- `experiment_results/per_user_pretrain_streaming_L{L}_{timestamp}/`：`00_manifest.txt`（含 seeds 列表）、`orchestrate.log`、各 `{Model}_N{N}_s{seed}.log` 与 `{Model}_N{N}_s{seed}_cmd.txt`
+- checkpoint 与 `user_states_*.pt`：`saved/per_user_pretrain_perN{N}_L{L}_s{seed}/`（按 seed 隔离，多 seed 并行不互覆盖）
+
+**已有 ckp，只重算流式 T2T 指标**（不重新预训练 / dump）：`scripts/retest_perN_streaming_t2t_1m.py` 会加载同一路径的 `.pth` 与 `user_states_*.pt`，重跑 Step C。汇总 **TXT 默认含 recall/ndcg/mrr @10、@20、@50**（与 `T2T_OVERRIDES` 的 `topk` 一致；JSON/CSV 本身含全量列）；**只需 @10 时**加 `--at10-only`。多 seed 时表内为 mean±std。
+
+| 命令 | 说明 |
+|------|------|
+| `python scripts/retest_perN_streaming_t2t_1m.py` | 默认 N=10,20,50,100 × GDN/Adam/Fro × seed=2020、双卡；TXT 含 @10/@20/@50 九项 |
+| `python scripts/retest_perN_streaming_t2t_1m.py --Ns 10,20 -L 64 --t2t_lr 5e-5` | 子集 N 与流式 lr |
+| `python scripts/retest_perN_streaming_t2t_1m.py --at10-only` | 汇总 TXT 只打印 @10 三行 |
+| `python scripts/retest_perN_streaming_t2t_1m.py --txt-only-20-50` | 汇总 TXT **只列 @20/@50**（不列 @10）；任务仍一次跑完 T2T，不重复多跑，仅省篇幅 |
+| `bash scripts/run_retest_perN_streaming_t2t_1m_smoke.sh` | 烟测：只评 `N=10`、GDN、单卡（需已存在 `saved/per_user_pretrain_perN10_L64/` 或 `_s2020`） |
+
+输出：`experiment_results/retest_perN_streaming_L{L}_{timestamp}.txt` / `.csv`，及同时间戳目录下 `orchestrate.log`、各任务 `.log` / `_cmd.txt`。
+
+#### 场景 I：FroRec 二阶矩 V 消融（Fro vs FroNoV）
+
+隔离 **scalar Frobenius 二阶矩 V** 在流式 T2T 下的独立贡献。对比两个**只差 V 一个组件**的变体：
+
+| 变体 | 一阶 M | Adam bias-correction (bc1/bc2) | 二阶 V (denom) | update |
+|---|---|---|---|---|
+| `Fro` (baseline) | ✓ | ✓ | scalar V | `S = S_end + η · (M/bc1) / (√(V/bc2) + eps)` |
+| `FroNoV` (ablation) | ✓ | bc1 only | **denom = 1** | `S = S_end + η · (M/bc1)` |
+
+实现：`GatedDeltaLayerChunkFroAdam` 加 `use_first_moment` / `use_second_moment` 开关；`FroRecNoV` 子类在构造前置 `use_second_moment=False`。V 仍累进（维护 state 张量维度以兼容 `state_dump`），但 `denom=1` 强制跳过。
+
+- 判读：
+  - **Fro > FroNoV 稳定显著** → scalar V 有独立贡献，论文可主推「F-Adam 二阶预条件子 streaming 有效」
+  - **Fro ≈ FroNoV** → V 无贡献，Fro 相对 GDN 的增益全来自 M + bc1，需换叙事
+
+| 命令 | 说明 |
+|------|------|
+| `python scripts/run_fro_ablation_t2t_1m.py` | 默认：Fro vs FroNoV × N=100 × 3 seed（2020/2021/2022），双卡，≈1 小时 wall |
+| `python scripts/run_fro_ablation_t2t_1m.py --include_gdn` | 三方对照：GDN / Fro / FroNoV 同时跑，检查 FroNoV 是否已超过 GDN |
+| `python scripts/run_fro_ablation_t2t_1m.py --Ns 20,50,100` | 扫多个 N，回答「V 贡献是否随 per-user 历史长度变化」 |
+| `python scripts/run_fro_ablation_t2t_1m.py --seeds 2020,2021,2022,2023,2024` | 5 seed 更稳 CI |
+
+**产物**：与场景 H 相同（同一后端脚本，表格自动把 Fro / FroNoV / GDN 作为独立列）。
+
+**非流式也可消融**：`python scripts/run_non_streaming_experiments_1m.py --models Fro FroNoV -L 64` 会把 FroNoV 作为独立列参与 ml-1m 非流式评估。
 
 ##### 场景 G 数据如何被使用（数据流详解）
 
