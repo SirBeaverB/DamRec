@@ -37,6 +37,9 @@ MODEL_CONFIGS = {
     "DamRec": "recbole/properties/quick_start_config/sequential_DamRec.yaml",
     "Fro": "recbole/properties/quick_start_config/sequential_FroRec.yaml",
     "FroNoV": "recbole/properties/quick_start_config/sequential_FroRecNoV.yaml",
+    "FroEps8": "recbole/properties/quick_start_config/sequential_FroRecEps8.yaml",
+    "FroB999": "recbole/properties/quick_start_config/sequential_FroRecB999.yaml",
+    "FroEta01": "recbole/properties/quick_start_config/sequential_FroRecEta01.yaml",
 }
 
 # 旧键名兼容：与 MODEL_CONFIGS 中同一套 yaml / RecBole 类名 DamRec
@@ -48,7 +51,7 @@ def resolve_model_key(key: str) -> str:
 
 
 # 表格/CSV 列顺序（与 MODEL_CONFIGS 一致）
-MODEL_COLS_ORDER = ["GDN", "Mo", "Nest", "DamRec", "Fro", "FroNoV"]
+MODEL_COLS_ORDER = ["GDN", "Mo", "Nest", "DamRec", "Fro", "FroNoV", "FroEps8", "FroB999", "FroEta01"]
 
 # CLI 键 -> 实际模型类名（传给 Config model=）
 CONFIG_TO_MODEL = {
@@ -58,6 +61,9 @@ CONFIG_TO_MODEL = {
     "DamRec": "DamRec",
     "Fro": "FroRec",
     "FroNoV": "FroRecNoV",
+    "FroEps8": "FroRecEps8",
+    "FroB999": "FroRecB999",
+    "FroEta01": "FroRecEta01",
 }
 
 

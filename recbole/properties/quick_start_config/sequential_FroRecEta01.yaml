@@ -1,0 +1,25 @@
+# FroRecEta01: FroRec 超参探针 - adam_eta 从 0.05 提到 0.1
+# 假设：默认 eta=0.05 过保守，streaming 信号微弱时 S 更新几乎不动；翻倍到 0.1 让 M/denom 注入更强。
+
+dataset: ml-100k
+MAX_ITEM_LIST_LENGTH: 50
+embedding_size: 64
+streaming_mode: False
+dropout_prob: 0.2
+adam_beta1: 0.9
+adam_beta2: 0.99
+adam_eps: 1e-4
+adam_eta: 0.1         # 唯一变动：0.05 → 0.1
+train_neg_sample_args: ~
+
+eval_args:
+  split: {'LS': 'valid_and_test'}
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 4096
+eval_batch_size: 2048
+epochs: 100
+stopping_step: 10
+learning_rate: 0.001

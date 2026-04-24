@@ -21,6 +21,80 @@ from logging import getLogger
 from recbole.data.interaction import Interaction
 
 
+def _norm_tok(t):
+    """将 RecBole atomic 里混用的 int/float/numpy.str/字符串 统一成可比较的 id 串（Yelp 必用）。"""
+    if t is None:
+        return ""
+    if hasattr(t, "item") and not isinstance(t, (str, bytes)):
+        try:
+            t = t.item()
+        except Exception:
+            pass
+    if isinstance(t, (bool, np.bool_)):
+        return str(t).strip()
+    if isinstance(t, (int, np.integer)) and not isinstance(t, bool):
+        return str(int(t))
+    if isinstance(t, (float, np.floating)):
+        f = float(t)
+        if np.isnan(f) or np.isinf(f):
+            return ""
+        if f == int(f):
+            return str(int(f))
+        return str(t).strip()
+    s = str(t).strip()
+    if not s or s.lower() in ("nan", "none", "null"):
+        return ""
+    try:
+        f = float(s)
+        if not (np.isnan(f) or np.isinf(f)) and f == int(f):
+            return str(int(f))
+    except (ValueError, OverflowError):
+        pass
+    return s
+
+
+def _field_id2token_list(dataset, field):
+    """RecBole 的 field2id_token[field] 可能是 list 或 np.ndarray，不能用 `x or []`（ndarray 不能当 bool）。"""
+    v = None
+    if hasattr(dataset, "field2id_token") and dataset.field2id_token is not None:
+        v = dataset.field2id_token.get(field)
+    if v is None:
+        return []
+    if isinstance(v, np.ndarray):
+        return v.tolist()
+    return list(v)
+
+
+def _canon_token_to_id_map(pretrain_ds, field):
+    """构建 规范化 token 串 -> 预训练内部 id。扫 field2token_id 与 field2id_token 两套来源，键类型全吃齐。
+
+    仅 dict.get(原始key) 在 Yelp 上会大量 OOV→0，因键可能是 numpy 标量、'123'/'123.0' 等。
+    """
+    tid = pretrain_ds.field2token_id.get(field) if hasattr(pretrain_ds, "field2token_id") else None
+    if tid is None:
+        tid = {}
+    id2t = _field_id2token_list(pretrain_ds, field)
+    out = {}
+    for k, v in tid.items():
+        ck = _norm_tok(k)
+        if ck and ck not in out:
+            out[ck] = int(v)
+    for i, tok in enumerate(id2t):
+        if i == 0:
+            continue
+        ck = _norm_tok(tok)
+        if not ck or ck in out:
+            continue
+        v = tid.get(tok)
+        if v is None:
+            v = tid.get(str(tok))
+        if v is None:
+            v = i
+        out[ck] = int(v)
+    return out
+
+
+
 def _align_t2t_vocab_to_pretrain(t2t_dataset, pretrain_dataset, config):
     """将 T2T 数据集的词表与预训练对齐，并重映射所有 ID 张量。
     RecBole 用 pd.factorize 按首次出现顺序分配 ID，pretrain/t2t 的 inter 顺序不同导致 ID 错位。
@@ -33,17 +107,41 @@ def _align_t2t_vocab_to_pretrain(t2t_dataset, pretrain_dataset, config):
     def _build_id_map(t2t_ds, pretrain_ds, field):
         """t2t_id -> pretrain_id，0(PAD) 保持 0"""
         t2t_id2token = t2t_ds.field2id_token.get(field)
-        pretrain_token2id = pretrain_ds.field2token_id.get(field, {})
-        if t2t_id2token is None or not pretrain_token2id:
+        if t2t_id2token is None:
+            return None
+        canon = _canon_token_to_id_map(pretrain_ds, field)
+        if not canon:
             return None
         id_map = np.zeros(len(t2t_id2token), dtype=np.int64)
+        n_miss = 0
         for old_id in range(len(t2t_id2token)):
             if old_id == 0:
                 id_map[0] = 0
                 continue
             token = t2t_id2token[old_id]
-            new_id = pretrain_token2id.get(token, 0)
-            id_map[old_id] = new_id
+            ck = _norm_tok(token)
+            pid = int(canon.get(ck, 0)) if ck else 0
+            id_map[old_id] = pid
+            if old_id > 0 and pid == 0 and ck:
+                n_miss += 1
+        if n_miss > 0:
+            getLogger().debug(
+                "[StreamingTimeline] %s: id_map 中仍 OOV token 数 %d / %d（仅 debug）",
+                field,
+                n_miss,
+                max(len(t2t_id2token) - 1, 1),
+            )
+        if len(id_map) > 1 and int(np.sum(id_map[1:])) == 0:
+            sm = []
+            for j in range(1, min(6, len(t2t_id2token))):
+                tok = t2t_id2token[j]
+                sm.append((j, repr(tok), _norm_tok(tok)))
+            getLogger().error(
+                "[StreamingTimeline] %s 的 id_map 除 0 外全 OOV；t2t 样例 (internal_id, raw, norm)=%s。"
+                "若与 pretrain 同源仍如此，请核对两子集 .inter 中该列是否一致。",
+                field,
+                sm,
+            )
         return id_map
 
     uid_map = _build_id_map(t2t_dataset, pretrain_dataset, uid_field)
@@ -51,6 +149,18 @@ def _align_t2t_vocab_to_pretrain(t2t_dataset, pretrain_dataset, config):
     if uid_map is None or iid_map is None:
         logger.warning("[StreamingTimeline] 词表对齐失败：缺少 field2token_id")
         return
+    if len(uid_map) > 1:
+        logger.info(
+            "[StreamingTimeline] uid_map 非零项 %d / %d（t2t user 词表槽，不含 PAD=0）",
+            int(np.sum(uid_map[1:] > 0)),
+            len(uid_map) - 1,
+        )
+    if len(iid_map) > 1:
+        logger.info(
+            "[StreamingTimeline] iid_map 非零项 %d / %d",
+            int(np.sum(iid_map[1:] > 0)),
+            len(iid_map) - 1,
+        )
 
     def _remap_and_assign(container, key, m):
         if key not in container or m is None:
@@ -96,6 +206,30 @@ def _align_t2t_vocab_to_pretrain(t2t_dataset, pretrain_dataset, config):
     if item_id_list_field in t2t_dataset.field2id_token:
         t2t_dataset.field2id_token[item_id_list_field] = pretrain_dataset.field2id_token[iid_field]
         t2t_dataset.field2token_id[item_id_list_field] = pretrain_dataset.field2token_id[iid_field]
+
+    # 诊断：若对齐后 T2T 的 user 列几乎为常数，流式 T2T 会全 0 或越界
+    if hasattr(t2t_dataset, "_raw_inter_for_timeline") and t2t_dataset._raw_inter_for_timeline is not None:
+        rawx = t2t_dataset._raw_inter_for_timeline.interaction
+        if uid_field in rawx:
+            uu = rawx[uid_field]
+            arr = uu.cpu().numpy() if torch.is_tensor(uu) else np.asarray(uu, dtype=np.int64)
+            flat = arr.flatten()
+            nuniq = len(np.unique(flat))
+            n0 = int(np.sum(flat == 0))
+            if nuniq <= 1 and len(flat) > 50:
+                logger.error(
+                    "[StreamingTimeline] 对齐后 T2T user 列仍几乎常数 (unique=%d, n=%d, n_uid==0=%d)。"
+                    "多为 t2t 与 pretrain 的 token 键不一致，已全部映成 0。请检查两子集 .inter 的 user 列与 RecBole token 类型。",
+                    nuniq,
+                    len(flat),
+                    n0,
+                )
+            elif n0 > len(flat) * 0.4:
+                logger.warning(
+                    "[StreamingTimeline] 对齐后 user 列 label==0 占比 %.1f%%（n=%d），若异常请检查 OOV。",
+                    100.0 * n0 / max(len(flat), 1),
+                    len(flat),
+                )
 
     logger.info(
         "[StreamingTimeline] 词表已对齐到预训练集：field2token_id/field2id_token 已覆盖，"

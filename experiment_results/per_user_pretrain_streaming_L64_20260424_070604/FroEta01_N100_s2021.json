@@ -1,0 +1,22 @@
+{
+  "model": "FroEta01",
+  "model_name": "FroRecEta01",
+  "N": 100,
+  "dataset": "ml-1m-pretrain-per100",
+  "ckp_dir": "/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021",
+  "ckp_path": null,
+  "states_path": "/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/user_states_FroRecEta01.pt",
+  "result": {},
+  "t_sec": null,
+  "mem_gb": null,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "seed": 2021,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": false
+  }
+}

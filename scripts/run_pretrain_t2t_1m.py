@@ -57,6 +57,9 @@ MODEL_CONFIGS = {
     "Adam": ("DamRec", "recbole/properties/quick_start_config/sequential_DamRec.yaml"),
     "Fro": ("FroRec", "recbole/properties/quick_start_config/sequential_FroRec.yaml"),
     "FroNoV": ("FroRecNoV", "recbole/properties/quick_start_config/sequential_FroRecNoV.yaml"),
+    "FroEps8": ("FroRecEps8", "recbole/properties/quick_start_config/sequential_FroRecEps8.yaml"),
+    "FroB999": ("FroRecB999", "recbole/properties/quick_start_config/sequential_FroRecB999.yaml"),
+    "FroEta01": ("FroRecEta01", "recbole/properties/quick_start_config/sequential_FroRecEta01.yaml"),
     # 与 run_baseline_experiments_1m 同 yaml；T2T 用 StreamingTestThenTrainTrainer，无跨 batch GRU 隐状态（与 GDN 的 S 不同）
     "GRU4Rec": ("GRU4Rec", "recbole/properties/quick_start_config/baselines/sequential_GRU4Rec_1m.yaml"),
 }
@@ -101,7 +104,13 @@ def _ensure_split():
 
 
 def run_pretrain(model_name, config_file, ckp_dir, show_progress=True, max_seq_len=None, seed=None):
-    """在 ml-1m-pretrain 上预训练，保存到 ckp_dir"""
+    """在 ml-1m-pretrain 上预训练，保存到 ckp_dir。
+
+    Returns:
+        tuple: (saved_model_path, pretrain_valid_dict, pretrain_test_dict)
+        后两者为 **pretrain 子集**上 RecBole 常规划分的 best valid 与 test 全排序指标
+        （非流式 sequential），与后段 T2T(20%) 的 ``result`` 不是同一测试分布。
+    """
     overrides = dict(PRETRAIN_OVERRIDES)
     if max_seq_len is not None:
         overrides["MAX_ITEM_LIST_LENGTH"] = max_seq_len
@@ -132,9 +141,21 @@ def run_pretrain(model_name, config_file, ckp_dir, show_progress=True, max_seq_l
     model = get_model(config["model"])(config, train_data._dataset).to(config["device"])
 
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
-    trainer.fit(train_data, valid_data, saved=True, show_progress=show_progress)
+    _bs, best_valid_result = trainer.fit(
+        train_data, valid_data, saved=True, show_progress=show_progress
+    )
+    pretrain_valid = (
+        {k: float(v) for k, v in best_valid_result.items()} if best_valid_result else {}
+    )
+    pretrain_test = {}
+    if test_data is not None:
+        test_raw = trainer.evaluate(
+            test_data, load_best_model=True, show_progress=show_progress
+        )
+        if test_raw is not None:
+            pretrain_test = {k: float(v) for k, v in test_raw.items()}
 
-    return trainer.saved_model_file
+    return trainer.saved_model_file, pretrain_valid, pretrain_test
 
 
 def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, max_seq_len=None, show_progress=True, seed=None):
@@ -260,7 +281,7 @@ def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, 
 
 
 def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, max_seq_len=None, zero_shot=False, user_states_path=None, seed=None):
-    """从 checkpoint 加载，在 ml-1m-t2t 上运行 T2T。
+    """从 checkpoint 加载，在 T2T_OVERRIDES['dataset']（默认 ml-1m-t2t）上运行流式 T2T。
     t2t_model: 若指定且与 checkpoint 中的 model 不同，则用 strict=False 做「嫁接」：
        用 GDN 的离线权重热启动 MoRec/NestRec/DamRec/FroRec，M/V 从 0 吸收流式数据。
     """
@@ -307,9 +328,11 @@ def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, 
         "config_file_list": [config_file],  # 供 data_preparation 词表对齐时构建 pretrain config
         **overrides,
     }
+    # 必须与 overrides['dataset'] 一致；曾硬编码 ml-1m-t2t 导致 Yelp 等脚本改了 T2T_OVERRIDES 仍加载错数据、词表对齐全 OOV。
+    t2t_dataset = overrides.get("dataset", "ml-1m-t2t")
     config = Config(
         model=model_name,
-        dataset="ml-1m-t2t",
+        dataset=t2t_dataset,
         config_file_list=[config_file],
         config_dict=config_dict,
     )
@@ -444,9 +467,15 @@ def main():
             model_name, config_file = MODEL_CONFIGS[model_key]
             print(f"\n{'='*60}\n预训练 {model_key} ({model_name}) ...\n{'='*60}")
             try:
-                ckp_file = run_pretrain(model_name, config_file, ckp_dir, show_progress, max_seq_len=args.max_seq_len)
-                saved_ckps[model_key] = ckp_file
+                ckp_file, pv, pt = run_pretrain(
+                    model_name, config_file, ckp_dir, show_progress, max_seq_len=args.max_seq_len
+                )
+                saved_ckps[model_key] = (ckp_file, pv, pt)
                 print(f"已保存: {ckp_file}")
+                print(
+                    f"  [pretrain 子集] valid recall@10={pv.get('recall@10', 'N/A')} | "
+                    f"test recall@10={pt.get('recall@10', 'N/A')}"
+                )
             except Exception as e:
                 print(f"[ERROR] {model_key} 预训练失败: {e}")
                 import traceback
@@ -462,9 +491,21 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_file = os.path.join(output_dir, f"pretrain_t2t_1m_{timestamp}.txt")
 
-        lines = ["预训练(80%) + T2T(20%) 实验 - ml-1m", f"time={timestamp}", ""]
-        for model_key, ckp_file in saved_ckps.items():
-            if not os.path.isfile(ckp_file):
+        lines = [
+            "预训练(80%) + T2T(20%) 实验 - ml-1m",
+            f"time={timestamp}",
+            "",
+            "[说明] pretrain_valid / pretrain_test 为 pretrain 数据上**常规 sequential 离线**指标；",
+            "       下列 streaming T2T 行为后 20% 流式指标。",
+            "",
+        ]
+        for model_key, pack in saved_ckps.items():
+            if not isinstance(pack, tuple) or len(pack) != 3:
+                ckp_file = pack if isinstance(pack, str) else None
+                pv, pt = {}, {}
+            else:
+                ckp_file, pv, pt = pack
+            if not ckp_file or not os.path.isfile(ckp_file):
                 continue
             # 工业标准：导出用户状态库 (user_states.pt)，T2T 时自动加载 (full 模式默认开启)
             do_dump = (args.dump_state or (not args.no_dump_state)) and args.mode == "full"
@@ -484,7 +525,15 @@ def main():
                     zero_shot=args.zero_shot,
                 )
                 r10 = result.get("recall@10", "N/A")
-                lines.append(f"{model_key}\trecall@10={r10}\ttime={t_sec:.1f}s\tmem={mem:.2f}GB" if mem else f"{model_key}\trecall@10={r10}\ttime={t_sec:.1f}s")
+                pv10 = pv.get("recall@10", "N/A") if isinstance(pv, dict) else "N/A"
+                pt10 = pt.get("recall@10", "N/A") if isinstance(pt, dict) else "N/A"
+                line = (
+                    f"{model_key}\tpretrain_valid@10={pv10}\tpretrain_test@10={pt10}\t"
+                    f"streaming@10={r10}\ttime={t_sec:.1f}s"
+                )
+                if mem:
+                    line += f"\tmem={mem:.2f}GB"
+                lines.append(line)
             except Exception as e:
                 print(f"[ERROR] {model_key} T2T 失败: {e}")
                 lines.append(f"{model_key}\tERROR: {e}")

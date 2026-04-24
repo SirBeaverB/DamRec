@@ -1,0 +1,12 @@
+=== Per-model Pretrain + Streaming T2T on yelp2018 ===
+start     = 2026-04-24T09:01:07.402569
+work_dir  = /root/DamRec/experiment_results/per_model_streaming_yelp2018_L64_20260424_090107
+run_id    = 20260424_090107
+argv      = ['/root/DamRec/scripts/run_per_model_pretrain_t2t_yelp2018.py', '--models', 'GDN', '--seeds', '2020', '--epochs', '3', '--max_seq_len', '64', '--n_gpus', '1', '--skip_dump']
+host CUDA = (unset)
+slot GPUs = ['0']
+models    = ['GDN']
+seeds     = [2020]
+L         = 64
+epochs    = 3
+t2t_lr    = 0.0001

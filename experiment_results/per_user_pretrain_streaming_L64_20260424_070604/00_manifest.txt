@@ -1,0 +1,12 @@
+=== Pretrain (perN) + streaming T2T (ml-1m) ===
+start     = 2026-04-24T07:06:04.575087
+work_dir  = /root/DamRec/experiment_results/per_user_pretrain_streaming_L64_20260424_070604
+run_id    = 20260424_070604
+argv      = ['scripts/run_pretrain_perN_streaming_t2t_1m.py', '--Ns', '100', '--models', 'FroEps8,FroB999,FroEta01', '--seeds', '2020,2021', '--n_gpus', '2']
+host CUDA = (unset)
+slot GPUs = ['0', '1']
+Ns        = [100]  (each >= 10)
+models    = ['FroEps8', 'FroB999', 'FroEta01']
+seeds     = [2020, 2021]
+L epochs  = 64, 150
+orchestrate.log = /root/DamRec/experiment_results/per_user_pretrain_streaming_L64_20260424_070604/orchestrate.log

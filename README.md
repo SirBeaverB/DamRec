@@ -97,7 +97,7 @@ python scripts/prepare_ml1m_80_20_split.py
 # Step 2：预训练 + 状态导出 + T2T，一气呵成
 python scripts/run_pretrain_t2t_1m.py --mode full
 ```
-输出：`saved/pretrain_t2t_1m/` 下 GDN/MoRec/NestRec/DamRec/FroRec 的 checkpoint 和 `user_states.pt`，以及 `experiment_results/pretrain_t2t_1m_*.txt`。
+输出：`saved/pretrain_t2t_1m/` 下 checkpoint 与 `user_states.pt`，以及 `experiment_results/pretrain_t2t_1m_*.txt`。**txt 中每行同时含** `pretrain_valid@10` / `pretrain_test@10`（pretrain 子集上**常规 sequential 离线**划分）与 `streaming@10`（后 20% T2T），二者**不是同一测试集**。
 
 #### 场景 B：已有 checkpoint，直接跑 T2T
 
@@ -185,7 +185,7 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_per_model_pretrain_t2t_1m.py \
 **产物**：
 - `saved/per_model_pretrain_L64/{MODEL}-*.pth`（5 个 checkpoint）
 - `saved/per_model_pretrain_L64/user_states_{MODEL}.pt`（5 份 per-user 状态）
-- `experiment_results/per_model_streaming_L64_{timestamp}.txt` / `.csv`（汇总表 + 含抬头说明）
+- `experiment_results/per_model_streaming_L64_{timestamp}.txt` / `.csv`：除流式 T2T 主表外，另含 **PRETRAIN 离线** valid / test 块，以及 `pretrain_valid_*` / `pretrain_test_*` 列（与 T2T 考卷不同）
 - `experiment_results/per_model_streaming_L64_{timestamp}/{MODEL}.log`（单模型日志）
 - `experiment_results/per_model_streaming_L64_{timestamp}/{MODEL}.json`（单模型结果 JSON）
 
@@ -256,6 +256,95 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_per_model_pretrain_t2t_1m.py \
 **产物**：与场景 H 相同（同一后端脚本，表格自动把 Fro / FroNoV / GDN 作为独立列）。
 
 **非流式也可消融**：`python scripts/run_non_streaming_experiments_1m.py --models Fro FroNoV -L 64` 会把 FroNoV 作为独立列参与 ml-1m 非流式评估。
+
+#### 场景 J：yelp2018 streaming T2T（跨数据集验证）
+
+ml-1m 上流式实验发现所有模型（GDN / DamRec / FroRec / MoRec / NestRec）都被压到 popularity baseline 附近（recall@10 ≈ 0.01），主要原因是 ml-1m 80/20 时间切跨 era 的概念漂移过大。为验证是否数据集自身性质所致，把同一流式 T2T 协议迁到 yelp2018。
+
+**Step 0: 下载 yelp2018 atomic 数据集**
+
+```bash
+# 从 RecBole 官方 S3 下载（https://recbole.s3-accelerate.amazonaws.com/ProcessedDatasets/Yelp/yelp2018.zip）
+python scripts/download_yelp2018.py
+# 产物: dataset/yelp2018/yelp2018.inter (+ 可选 .user / .item)
+```
+
+下载失败时：手动从上述 URL 拉 zip 到 `dataset/yelp2018.zip`，再重跑 `download_yelp2018.py` 会自动解压校验。
+
+**Step 1: 80/20 时间切分（全量 与 子集 可并存：子集用独立目录，不覆盖全量）**
+
+- **全量**（不写 `--data_tag`）：写入默认路径（与旧版一致），会**覆盖**更新：
+  - `dataset/yelp2018-pretrain/yelp2018-pretrain.inter`
+  - `dataset/yelp2018-t2t/yelp2018-t2t.inter`
+- **用户子集**（`--max_users` 或 `--user_sample_ratio`）**必须**同时指定 **`--data_tag` 某标签**，例如 `u5000`，生成**另一套**目录，不碰全量：
+  - `dataset/yelp2018-pretrain-u5000/yelp2018-pretrain-u5000.inter`
+  - `dataset/yelp2018-t2t-u5000/yelp2018-t2t-u5000.inter`  
+- 占位行 (rating=0) 与可选复制 `.user` / `.item` 的语义同前。
+
+**A. 全量 Yelp**：
+
+```bash
+python scripts/prepare_yelp2018_80_20_split.py
+```
+
+**B. 5000 用户子集**（`--data_tag` 可自取，与 Step 2 的 `--data_tag` 保持一致即可）：
+
+```bash
+python scripts/prepare_yelp2018_80_20_split.py --data_tag u5000 --max_users 5000 --seed 42
+```
+
+也支持 `--user_sample_ratio 0.1`（与 `--max_users` 同时给时以 `--max_users` 为准）。子集上的绝对指标**不要与全量直接对比**；适合管线、相对强弱、多 seed 预扫。
+
+**Step 2 里如何选择数据集**  
+
+- 跑**全量**：**不要**传 `--data_tag`（读默认 `yelp2018-pretrain` / `yelp2018-t2t`）。  
+- 跑**子集**：在 `run_per_model_pretrain_t2t_yelp2018.py` 上**加上与 Step 1 相同**的 `--data_tag u5000`，读带后缀的 RecBole dataset 名，checkpoint 在 `saved/per_model_pretrain_yelp2018_u5000_L{L}_s{seed}/`，**不会**与全量 ckp 混目录。
+
+**一键示例**（5000 用户 + 四模型；需已完成 Step 0）：
+
+```bash
+python scripts/prepare_yelp2018_80_20_split.py --data_tag u5000 --max_users 5000 --seed 42
+python scripts/run_per_model_pretrain_t2t_yelp2018.py --data_tag u5000 --models GDN,Adam,Fro,GRU4Rec
+```
+
+全量仍在磁盘上时，想跑全量实验：用 Step 1A 重刷默认目录，或不动子集、直接**不带** `--data_tag` 跑 Step 2 即可（前提：默认目录下已是你要的全量切分）。
+
+**Step 2: 每模型独立预训练 + streaming T2T（后 20% 流式 T2T 协议，与 `run_pretrain_t2t_1m` 同源）**
+
+**只跑 GDN、DamRec、FroRec 三模型时**（与脚本默认一致；CLI 里 **DamRec 键名是 `Adam`**，与 ml-1m 其它脚本相同）：
+
+```bash
+# 已做完 Step 0+1 后，一条命令即：三模型 × 预训( yelp2018-pretrain ) + dump user_states + 流式 T2T( yelp2018-t2t )
+python scripts/run_per_model_pretrain_t2t_yelp2018.py
+# 等价显式写子集：
+python scripts/run_per_model_pretrain_t2t_yelp2018.py --models GDN,Adam,Fro
+# 与 ml-1m 相同，可追加 GRU4Rec（键名大小写与 MODEL_CONFIGS 一致）：
+python scripts/run_per_model_pretrain_t2t_yelp2018.py --models GDN,Adam,Fro,GRU4Rec
+# 子集数据（与 Step 1 的 --data_tag 一致）：
+# python scripts/run_per_model_pretrain_t2t_yelp2018.py --data_tag u5000 --models GDN,Adam,Fro,GRU4Rec
+```
+
+单卡顺序跑同一三模型、避免占满多 GPU 时：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_per_model_pretrain_t2t_yelp2018.py --models GDN,Adam,Fro --n_gpus 1 --seeds 2020
+```
+
+| 命令 | 说明 |
+|------|------|
+| `python scripts/run_per_model_pretrain_t2t_yelp2018.py` | 默认 **GDN / Adam(DamRec) / Fro** × 1 seed (2020) × 2 slot，约 1.5h wall |
+| `python scripts/run_per_model_pretrain_t2t_yelp2018.py --models GDN,Adam,Fro` | 同上，显式指定三模型 |
+| `python scripts/run_per_model_pretrain_t2t_yelp2018.py --models GDN,Adam,Fro,GRU4Rec` | 在三模型上再加 **GRU4Rec**（`run_pretrain_t2t_1m.MODEL_CONFIGS` 已注册；无 `forward_with_streaming` 则跳过 `user_states` 导出，T2T 仍跑） |
+| `python scripts/run_per_model_pretrain_t2t_yelp2018.py --seeds 2020,2021,2022` | 3 seed mean±std，约 4-5h |
+| `python scripts/run_per_model_pretrain_t2t_yelp2018.py --epochs 3 --models GDN --seeds 2020 --n_gpus 1` | smoke test：3 epoch 验通管线 |
+| `python scripts/run_per_model_pretrain_t2t_yelp2018.py --skip_pretrain --skip_dump` | 已有 ckp 只重测（用于调 t2t_lr） |
+
+**产物**：
+- 无 `data_tag`：`saved/per_model_pretrain_yelp2018_L{L}_s{seed}/`；有 `data_tag`：例如 `saved/per_model_pretrain_yelp2018_{tag}_L{L}_s{seed}/`；内含 `{MODEL}-*.pth` + `user_states_{MODEL}.pt`（若该模型有 dump）
+- `experiment_results/per_model_streaming_yelp2018[_{tag}]_L{L}_{timestamp}.txt` / `.csv`：文首含 **PRETRAIN 离线** valid/test 块，再是 **T2T 流式** 块；CSV 另含 `pretrain_valid_*` / `pretrain_test_*` 列
+- `experiment_results/per_model_streaming_yelp2018[_{tag}]_L{L}_{timestamp}/`: 每 `{Model}_s{seed}.log` 与 `00_manifest.txt`（`data_tag` 在 manifest 中也会记录）
+
+**注意**：yelp2018 约 1.5M 交互、31k user、38k item（比 ml-1m 稍大），跨度约 14 年（2004-2018），80/20 切后漂移**更严重**。预期上若仍是 popularity 天花板说明流式 T2T 协议本身在长时漂移数据上普遍失效；若 yelp2018 上 Fro/GDN 差距显著 > 0，则证实 ml-1m 结果是数据集特性，不是方法失效。
 
 ##### 场景 G 数据如何被使用（数据流详解）
 

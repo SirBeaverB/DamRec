@@ -1,0 +1,7 @@
+model,N,seed,pretrain_sec,t2t_sec,peak_mem_gb,test_recall@10,test_ndcg@10,test_mrr@10,test_hit@10,test_precision@10,test_recall@20,test_ndcg@20,test_mrr@20,test_hit@20,test_precision@20,test_recall@50,test_ndcg@50,test_mrr@50,test_hit@50,test_precision@50,ckp_path,states_path
+FroEps8,100,2020,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2020/user_states_FroRecEps8.pt
+FroEps8,100,2021,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/user_states_FroRecEps8.pt
+FroB999,100,2020,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2020/user_states_FroRecB999.pt
+FroB999,100,2021,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/user_states_FroRecB999.pt
+FroEta01,100,2020,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2020/user_states_FroRecEta01.pt
+FroEta01,100,2021,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,,/root/DamRec/saved/per_user_pretrain_perN100_L64_s2021/user_states_FroRecEta01.pt

@@ -216,6 +216,8 @@ def _worker_main(args):
         "ckp_dir": ckp_dir,
         "ckp_path": None,
         "states_path": states_path,
+        "pretrain_valid": {},
+        "pretrain_test": {},
         "result": {},
         "t_sec": None,
         "mem_gb": None,
@@ -243,7 +245,7 @@ def _worker_main(args):
             print(f"[{model_key}/N={N}/seed={seed}] Step A: pretrain on {dataset_name} "
                   f"({pt1m.PRETRAIN_OVERRIDES['epochs']} epochs, L={args.max_seq_len})")
             t0 = time.perf_counter()
-            ckp_path = run_pretrain(
+            ckp_path, pv, pt = run_pretrain(
                 model_name=model_name,
                 config_file=config_file,
                 ckp_dir=ckp_dir,
@@ -252,6 +254,8 @@ def _worker_main(args):
                 seed=seed,
             )
             record["pretrain_sec"] = time.perf_counter() - t0
+            record["pretrain_valid"] = pv or {}
+            record["pretrain_test"] = pt or {}
             record["stages_run"]["pretrain"] = True
             print(f"[{model_key}/N={N}/seed={seed}] Step A done in {record['pretrain_sec']:.0f}s, ckp={ckp_path}")
         record["ckp_path"] = ckp_path

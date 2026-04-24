@@ -36,3 +36,6 @@ from recbole.model.sequential_recommender.damrec import DamRec
 from recbole.model.sequential_recommender.nestrec import NestRec
 from recbole.model.sequential_recommender.frorec import FroRec
 from recbole.model.sequential_recommender.frorec_nov import FroRecNoV
+from recbole.model.sequential_recommender.frorec_eps8 import FroRecEps8
+from recbole.model.sequential_recommender.frorec_b999 import FroRecB999
+from recbole.model.sequential_recommender.frorec_eta01 import FroRecEta01

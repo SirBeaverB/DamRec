@@ -1,0 +1,22 @@
+{
+  "model": "FroEps8",
+  "model_name": "FroRecEps8",
+  "N": 100,
+  "dataset": "ml-1m-pretrain-per100",
+  "ckp_dir": "/root/DamRec/saved/per_user_pretrain_perN100_L64_s2020",
+  "ckp_path": null,
+  "states_path": "/root/DamRec/saved/per_user_pretrain_perN100_L64_s2020/user_states_FroRecEps8.pt",
+  "result": {},
+  "t_sec": null,
+  "mem_gb": null,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "seed": 2020,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": false
+  }
+}

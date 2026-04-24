@@ -92,7 +92,9 @@ def _worker_main(args):
         "ckp_dir": ckp_dir,
         "ckp_path": None,
         "states_path": states_path,
-        "result": {},
+        "pretrain_valid": {},   # pretrain 子集上常规划分 best valid（sequential 离线）
+        "pretrain_test": {},    # pretrain 子集上 test（与 T2T 的 result 不同分布）
+        "result": {},           # streaming T2T on 后 20%
         "t_sec": None,
         "mem_gb": None,
         "pretrain_epochs": pt1m.PRETRAIN_OVERRIDES.get("epochs"),
@@ -119,7 +121,7 @@ def _worker_main(args):
         else:
             print(f"[{model_key}] Step A: pretrain on ml-1m-pretrain ({pt1m.PRETRAIN_OVERRIDES['epochs']} epochs, L={args.max_seq_len})")
             _t0 = time.perf_counter()
-            ckp_path = run_pretrain(
+            ckp_path, pv, pt = run_pretrain(
                 model_name=model_name,
                 config_file=config_file,
                 ckp_dir=ckp_dir,
@@ -127,8 +129,14 @@ def _worker_main(args):
                 max_seq_len=args.max_seq_len,
             )
             result_record["pretrain_sec"] = time.perf_counter() - _t0
+            result_record["pretrain_valid"] = pv or {}
+            result_record["pretrain_test"] = pt or {}
             result_record["stages_run"]["pretrain"] = True
             print(f"[{model_key}] Step A done in {result_record['pretrain_sec']:.0f}s, ckp={ckp_path}")
+            print(
+                f"[{model_key}]  pretrain 子集 valid@10={result_record['pretrain_valid'].get('recall@10', 'N/A')}, "
+                f"test@10={result_record['pretrain_test'].get('recall@10', 'N/A')}"
+            )
         result_record["ckp_path"] = ckp_path
         _save_and_maybe_exit()
 
@@ -336,7 +344,28 @@ def _aggregate(args, models, results, work_dir, run_id, out_dir):
     lines.append("")
 
     # ============================================================
-    # 主表：指标 × 模型
+    # 预训练阶段：pretrain 子集上的常规划分（与下方 streaming 非同一考卷）
+    # ============================================================
+    lines.append("-" * 90)
+    lines.append("PRETRAIN 离线 best-valid / test (pretrain 子集，RecBole leave-one-out+TO 等，见 yaml)")
+    lines.append("-" * 90)
+    for phase, key in [("valid (best)", "pretrain_valid"), ("test", "pretrain_test")]:
+        lines.append(f"  [{phase}]")
+        h = "Metric".ljust(label_w) + "".join(m.ljust(col_w) for m in models)
+        lines.append(h)
+        lines.append("-" * (label_w + col_w * len(models)))
+        for mk in METRIC_KEYS:
+            row = mk.ljust(label_w)
+            for m in models:
+                r = results.get(m)
+                sub = (r or {}).get(key) if r else None
+                val = None if not isinstance(sub, dict) else sub.get(mk)
+                row += fmt(val, width=col_w)
+            lines.append(row)
+        lines.append("")
+
+    # ============================================================
+    # 主表：流式 T2T 指标 × 模型
     # ============================================================
     lines.append("-" * 90)
     lines.append("TEST (streaming T2T)  —  Recall / NDCG / MRR @10, 越大越好")
@@ -400,10 +429,16 @@ def _aggregate(args, models, results, work_dir, run_id, out_dir):
         f.write(table + "\n")
     print(f"\nTXT: {txt_path}")
 
-    # CSV：保留完整 5 指标 + 耗时 + 路径，供下游脚本 / 多 seed 聚合用
-    csv_cols = (["model", "seed", "pretrain_sec", "t2t_sec", "peak_mem_gb"]
-                + [f"test_{mk}" for mk in METRIC_KEYS_FULL]
-                + ["ckp_path", "states_path"])
+    # CSV：pretrain 离线 + streaming + 耗时 + 路径
+    extra_pre = [f"pretrain_valid_{mk}" for mk in METRIC_KEYS_FULL] + [
+        f"pretrain_test_{mk}" for mk in METRIC_KEYS_FULL
+    ]
+    csv_cols = (
+        ["model", "seed", "pretrain_sec", "t2t_sec", "peak_mem_gb"]
+        + extra_pre
+        + [f"test_{mk}" for mk in METRIC_KEYS_FULL]
+        + ["ckp_path", "states_path"]
+    )
     with open(csv_path, "w", encoding="utf-8") as f:
         f.write(",".join(csv_cols) + "\n")
         for m in models:
@@ -415,6 +450,12 @@ def _aggregate(args, models, results, work_dir, run_id, out_dir):
             parts.append(f"{r.get('pretrain_sec'):.2f}" if r.get("pretrain_sec") is not None else "N/A")
             parts.append(f"{r.get('t_sec'):.2f}" if r.get("t_sec") is not None else "N/A")
             parts.append(f"{r.get('mem_gb'):.2f}" if r.get("mem_gb") is not None else "N/A")
+            for mk in METRIC_KEYS_FULL:
+                v = (r.get("pretrain_valid") or {}).get(mk) if isinstance(r.get("pretrain_valid"), dict) else None
+                parts.append(f"{v:.4f}" if v is not None else "N/A")
+            for mk in METRIC_KEYS_FULL:
+                v = (r.get("pretrain_test") or {}).get(mk) if isinstance(r.get("pretrain_test"), dict) else None
+                parts.append(f"{v:.4f}" if v is not None else "N/A")
             for mk in METRIC_KEYS_FULL:
                 v = r.get("result", {}).get(mk)
                 parts.append(f"{v:.4f}" if v is not None else "N/A")

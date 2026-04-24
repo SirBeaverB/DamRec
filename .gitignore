@@ -7,6 +7,12 @@ dataset/
 **/ml-10m/
 **/ml-1m/
 **/ml-100k/
+# yelp2018 及其 80/20 切片（已被 dataset/ 覆盖，显式列出便于追溯）
+**/yelp2018/
+**/yelp2018-pretrain/
+**/yelp2018-t2t/
+**/yelp2018*.zip
+**/yelp2018*.inter
 
 .vscode/
 .idea/

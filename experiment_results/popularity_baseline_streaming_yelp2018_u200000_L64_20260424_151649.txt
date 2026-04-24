@@ -1,0 +1,44 @@
+==========================================================================================
+Popularity Baselines for Streaming T2T Evaluation (yelp2018_u200000 80/20)
+==========================================================================================
+
+[实验情景]
+  与 scripts/run_per_model_pretrain_t2t_1m.py 共享 test 点定义：
+  ml-1m-t2t 内每用户按 timestamp 排序，尾部 max(1, int(n*test_ratio)) 为 test 点。
+  此脚本不训练任何模型，只用 pretrain 的 item 频次做 popularity 推荐。
+
+[基线说明]
+  POP_global  永远推荐 pretrain 全局频次 top-10 item（不看 user，最弱基线）
+  POP_user    推荐用户在 pretrain 历史中频次最高的 item，不足 10 个补全局热门
+
+[与 streaming pipeline 的差异]
+  本脚本剔除 rating=0 的占位行，得到 clean 基线；流式 pipeline 不过滤。
+  对评估影响极小（占位是单一 item + t_max 时间戳），但对所有方法一致。
+
+[数据规模]
+  pretrain 真实交互 =     639414
+  pretrain 唯一 item =     112404
+  pretrain 唯一 user =     160693
+  t2t 真实交互       =     159854
+  t2t 唯一 user      =      68914
+  test 点总数       =      70373  (test_ratio=0.1)
+  平均 test 点/user  =       1.02
+
+------------------------------------------------------------------------------------------
+TEST  —  Recall / NDCG / MRR @10  (越大越好)
+------------------------------------------------------------------------------------------
+Metric        POP_global    POP_user      
+------------------------------------------
+recall@10     0.0062        0.0056        
+ndcg@10       0.0033        0.0029        
+mrr@10        0.0025        0.0020        
+
+[理论参考] 纯随机 Recall@10 ≈ 10/112404 = 0.00009
+
+[判读指南]
+  对照 per_model_streaming_L*.txt 里 5 模型的 Recall@10：
+    模型 < POP_global             → 模型完全没学到，严重病理
+    POP_global ≤ 模型 < POP_user  → 只学到流行偏好，未学到用户个性化
+    模型 ≥ POP_user               → 真正学到了用户级信号，方法有效
+  通常论文里强 baseline 是 POP_user，弱 baseline 是 POP_global。
+==========================================================================================

@@ -33,8 +33,19 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PRETRAIN_INTER = os.path.join(PROJ, "dataset", "ml-1m-pretrain", "ml-1m-pretrain.inter")
-T2T_INTER = os.path.join(PROJ, "dataset", "ml-1m-t2t", "ml-1m-t2t.inter")
+
+
+def _resolve_paths(dataset, data_tag=None):
+    """
+    data_tag=None 或 ""  -> dataset/{dataset}-pretrain/{dataset}-pretrain.inter
+    data_tag="u5000"      -> dataset/{dataset}-pretrain-u5000/{dataset}-pretrain-u5000.inter
+    """
+    suffix = f"-{data_tag}" if data_tag else ""
+    pre_name = f"{dataset}-pretrain{suffix}"
+    t2t_name = f"{dataset}-t2t{suffix}"
+    pretrain = os.path.join(PROJ, "dataset", pre_name, f"{pre_name}.inter")
+    t2t = os.path.join(PROJ, "dataset", t2t_name, f"{t2t_name}.inter")
+    return pretrain, t2t
 
 
 def _read_inter(path):
@@ -124,8 +135,13 @@ def _eval_pop_user(test_points, user_history, pop_counter, k=10):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Popularity baselines for streaming T2T eval (ml-1m 80/20)"
+        description="Popularity baselines for streaming T2T eval (80/20 切分)"
     )
+    parser.add_argument("--dataset", type=str, default="ml-1m",
+                        help="数据集名，默认 ml-1m。支持 yelp2018 等 (需对应 {name}-pretrain/{name}-t2t 目录存在)")
+    parser.add_argument("--data-tag", dest="data_tag", type=str, default=None,
+                        help="采样子集 tag，如 u5000 / u200000。默认 None 算全体。"
+                             "带 tag 时读 {dataset}-pretrain-{tag} / {dataset}-t2t-{tag} 目录")
     parser.add_argument("--test_ratio", type=float, default=0.1,
                         help="每用户尾部多少比例作 test，默认 0.1，与 streaming pipeline 对齐")
     parser.add_argument("-L", "--max_seq_len", type=int, default=64,
@@ -134,18 +150,22 @@ def main():
                         help="结果输出目录，默认 experiment_results/")
     args = parser.parse_args()
 
-    if not os.path.isfile(PRETRAIN_INTER) or not os.path.isfile(T2T_INTER):
+    pretrain_inter, t2t_inter = _resolve_paths(args.dataset, args.data_tag)
+    if not os.path.isfile(pretrain_inter) or not os.path.isfile(t2t_inter):
+        tag_part = f"-{args.data_tag}" if args.data_tag else ""
         raise SystemExit(
-            f"未找到 ml-1m-pretrain / ml-1m-t2t.inter，请先运行：\n"
-            f"  python scripts/prepare_ml1m_80_20_split.py"
+            f"未找到 {args.dataset}-pretrain{tag_part} / {args.dataset}-t2t{tag_part}.inter。\n"
+            f"  pretrain: {pretrain_inter}\n"
+            f"  t2t:      {t2t_inter}\n"
+            f"请先跑 split 脚本（带对应采样 tag 参数）。"
         )
 
-    print(f"[1/3] 读取 {PRETRAIN_INTER}")
-    pretrain_rows, n_ph_pre = _read_inter(PRETRAIN_INTER)
+    print(f"[1/3] 读取 {pretrain_inter}")
+    pretrain_rows, n_ph_pre = _read_inter(pretrain_inter)
     print(f"      真实交互 {len(pretrain_rows)} 条，跳过占位 {n_ph_pre} 条")
 
-    print(f"[2/3] 读取 {T2T_INTER}")
-    t2t_rows, n_ph_t2t = _read_inter(T2T_INTER)
+    print(f"[2/3] 读取 {t2t_inter}")
+    t2t_rows, n_ph_t2t = _read_inter(t2t_inter)
     print(f"      真实交互 {len(t2t_rows)} 条，跳过占位 {n_ph_t2t} 条")
 
     print(f"[3/3] 计算基线")
@@ -165,13 +185,15 @@ def main():
     out_dir = args.output_dir or os.path.join(PROJ, "experiment_results")
     os.makedirs(out_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    txt_path = os.path.join(out_dir, f"popularity_baseline_streaming_L{args.max_seq_len}_{ts}.txt")
-    csv_path = os.path.join(out_dir, f"popularity_baseline_streaming_L{args.max_seq_len}_{ts}.csv")
+    data_tag_part = f"_{args.data_tag}" if args.data_tag else ""
+    tag = f"{args.dataset}{data_tag_part}_L{args.max_seq_len}"
+    txt_path = os.path.join(out_dir, f"popularity_baseline_streaming_{tag}_{ts}.txt")
+    csv_path = os.path.join(out_dir, f"popularity_baseline_streaming_{tag}_{ts}.csv")
 
     label_w, col_w = 14, 14
     lines = [
         "=" * 90,
-        "Popularity Baselines for Streaming T2T Evaluation (ml-1m 80/20)",
+        f"Popularity Baselines for Streaming T2T Evaluation ({args.dataset}{data_tag_part} 80/20)",
         "=" * 90,
         "",
         "[实验情景]",

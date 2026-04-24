@@ -1,0 +1,26 @@
+# FroRecEps8: FroRec 超参探针 - adam_eps 从 1e-4 恢复到标准 Adam 的 1e-8
+# 假设：默认 eps=1e-4 过大，会在 V≈0 早期让 denom 被 eps 夹死，造成 η/denom=500 的巨大步长放大；
+# 回到 1e-8 后 denom 由 √V 主导，数值稳定性接近 pretrain 领域 Adam 的行为。
+
+dataset: ml-100k
+MAX_ITEM_LIST_LENGTH: 50
+embedding_size: 64
+streaming_mode: False
+dropout_prob: 0.2
+adam_beta1: 0.9
+adam_beta2: 0.99
+adam_eps: 1.0e-8      # 唯一变动：1e-4 → 1e-8
+adam_eta: 0.05
+train_neg_sample_args: ~
+
+eval_args:
+  split: {'LS': 'valid_and_test'}
+  order: TO
+  mode: full
+
+repeatable: True
+train_batch_size: 4096
+eval_batch_size: 2048
+epochs: 100
+stopping_step: 10
+learning_rate: 0.001

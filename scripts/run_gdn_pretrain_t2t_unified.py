@@ -76,8 +76,14 @@ def main():
         os.makedirs(ckp_dir, exist_ok=True)
         model_name, config_file = MODEL_CONFIGS["GDN"]
         print(f"\n{'='*60}\n预训练 GDN (L={max_seq_len}) ...\n{'='*60}")
-        ckp_path = run_pretrain(model_name, config_file, ckp_dir, show_progress, max_seq_len=max_seq_len)
-        print(f"已保存: {ckp_path}\n")
+        ckp_path, pretrain_valid, pretrain_test = run_pretrain(
+            model_name, config_file, ckp_dir, show_progress, max_seq_len=max_seq_len
+        )
+        print(f"已保存: {ckp_path}")
+        print(
+            f"  [pretrain 子集] valid recall@10={pretrain_valid.get('recall@10', 'N/A')}, "
+            f"test recall@10={pretrain_test.get('recall@10', 'N/A')}\n"
+        )
 
     # 2. 五个模型依次 T2T
     results = {}
