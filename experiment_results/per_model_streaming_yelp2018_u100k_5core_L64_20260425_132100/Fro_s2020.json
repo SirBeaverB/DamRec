@@ -1,0 +1,40 @@
+{
+  "dataset": "yelp2018",
+  "data_tag": "u100k_5core",
+  "model": "Fro",
+  "model_name": "FroRec",
+  "seed": 2020,
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020/FroRec-Apr-25-2026_10-27-16.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020/user_states_FroRec.pt",
+  "pretrain_valid": {},
+  "pretrain_test": {},
+  "result": {
+    "recall@10": 0.008,
+    "recall@20": 0.0148,
+    "recall@50": 0.0296,
+    "mrr@10": 0.0025,
+    "mrr@20": 0.0029,
+    "mrr@50": 0.0034,
+    "ndcg@10": 0.0037,
+    "ndcg@20": 0.0054,
+    "ndcg@50": 0.0083,
+    "hit@10": 0.008,
+    "hit@20": 0.0148,
+    "hit@50": 0.0296,
+    "precision@10": 0.0008,
+    "precision@20": 0.0007,
+    "precision@50": 0.0006
+  },
+  "t_sec": 87.57324908900046,
+  "mem_gb": 9.91262435913086,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": true
+  }
+}

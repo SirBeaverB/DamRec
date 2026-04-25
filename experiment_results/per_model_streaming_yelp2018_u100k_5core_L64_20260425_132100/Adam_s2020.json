@@ -1,0 +1,40 @@
+{
+  "dataset": "yelp2018",
+  "data_tag": "u100k_5core",
+  "model": "Adam",
+  "model_name": "DamRec",
+  "seed": 2020,
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020/DamRec-Apr-25-2026_09-23-27.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020/user_states_DamRec.pt",
+  "pretrain_valid": {},
+  "pretrain_test": {},
+  "result": {
+    "recall@10": 0.0101,
+    "recall@20": 0.0173,
+    "recall@50": 0.037,
+    "mrr@10": 0.0033,
+    "mrr@20": 0.0038,
+    "mrr@50": 0.0044,
+    "ndcg@10": 0.0049,
+    "ndcg@20": 0.0067,
+    "ndcg@50": 0.0105,
+    "hit@10": 0.0101,
+    "hit@20": 0.0173,
+    "hit@50": 0.037,
+    "precision@10": 0.001,
+    "precision@20": 0.0009,
+    "precision@50": 0.0007
+  },
+  "t_sec": 139.5152758760014,
+  "mem_gb": 10.102419376373291,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": true
+  }
+}

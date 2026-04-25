@@ -1,0 +1,40 @@
+{
+  "dataset": "yelp2018",
+  "data_tag": "u100k_5core",
+  "model": "GDN",
+  "model_name": "GDN",
+  "seed": 2020,
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020/GDN-Apr-25-2026_09-23-27.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_yelp2018_u100k_5core_L64_s2020/user_states_GDN.pt",
+  "pretrain_valid": {},
+  "pretrain_test": {},
+  "result": {
+    "recall@10": 0.0098,
+    "recall@20": 0.0168,
+    "recall@50": 0.035,
+    "mrr@10": 0.0033,
+    "mrr@20": 0.0037,
+    "mrr@50": 0.0043,
+    "ndcg@10": 0.0048,
+    "ndcg@20": 0.0065,
+    "ndcg@50": 0.0101,
+    "hit@10": 0.0098,
+    "hit@20": 0.0168,
+    "hit@50": 0.035,
+    "precision@10": 0.001,
+    "precision@20": 0.0008,
+    "precision@50": 0.0007
+  },
+  "t_sec": 63.60671877700224,
+  "mem_gb": 9.215635299682617,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": true
+  }
+}

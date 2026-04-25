@@ -2,6 +2,9 @@
 /saved*
 *.pth
 
+# Claude Code
+.claude/
+
 # Dataset files (RecBole 下载，超过 GitHub 100MB 限制)
 dataset/
 **/ml-10m/

@@ -240,7 +240,7 @@ def _align_t2t_vocab_to_pretrain(t2t_dataset, pretrain_dataset, config):
 class StreamingTimelineBuilder:
     """构建全局时间轴，按时间戳排序的 (user_id, item_id, is_test) 序列。"""
 
-    def __init__(self, inter_feat, uid_field, iid_field, time_field, test_ratio=0.1):
+    def __init__(self, inter_feat, uid_field, iid_field, time_field, test_ratio=0.1, rating_field=None):
         self.uid_field = uid_field
         self.iid_field = iid_field
         self.time_field = time_field
@@ -250,6 +250,15 @@ class StreamingTimelineBuilder:
         uids = data[self.uid_field].numpy() if torch.is_tensor(data[self.uid_field]) else data[self.uid_field].values
         iids = data[self.iid_field].numpy() if torch.is_tensor(data[self.iid_field]) else data[self.iid_field].values
         times = data[self.time_field].numpy() if torch.is_tensor(data[self.time_field]) else data[self.time_field].values
+
+        # 过滤 rating=0 的占位行（prepare 脚本注入的 vocab 对齐 dummy）
+        if rating_field is not None and rating_field in data:
+            ratings = data[rating_field].numpy() if torch.is_tensor(data[rating_field]) else data[rating_field].values
+            mask = ratings != 0
+            uids, iids, times = uids[mask], iids[mask], times[mask]
+            n_dropped = int((~mask).sum())
+            if n_dropped:
+                getLogger().info(f"[StreamingTimeline] 过滤占位行 (rating=0): {n_dropped} 条")
 
         user_interactions = defaultdict(list)
         for uid, iid, t in zip(uids, iids, times):
@@ -303,10 +312,14 @@ def _load_pretrain_user_histories(config, dataset):
     uid_field = config["USER_ID_FIELD"]
     iid_field = config["ITEM_ID_FIELD"]
     time_field = config["TIME_FIELD"]
-    uid2id = dataset.field2token_id.get(uid_field, {})
-    iid2id = dataset.field2token_id.get(iid_field, {})
-    if not uid2id or not iid2id:
+    uid2id_raw = dataset.field2token_id.get(uid_field, {})
+    iid2id_raw = dataset.field2token_id.get(iid_field, {})
+    if not uid2id_raw or not iid2id_raw:
         return {}
+    # 规范化键：RecBole 对整数 ID（如 ML-10M）用 pd.factorize 返回 numpy.int64 键，
+    # 而 str(row[col]) 得到 Python str，两者 `in` 判断会全部失配 → 0 users。
+    uid2id = {_norm_tok(k): v for k, v in uid2id_raw.items()}
+    iid2id = {_norm_tok(k): v for k, v in iid2id_raw.items()}
     encoding = config.final_config_dict.get("encoding", "utf-8")
     df = pd.read_csv(inter_path, sep="\t", encoding=encoding)
     cols = {c.split(":")[0]: c for c in df.columns if ":" in c}
@@ -321,8 +334,8 @@ def _load_pretrain_user_histories(config, dataset):
         time_col = next((c for c in df.columns if "time" in c.lower()), df.columns[-1])
     user_items = defaultdict(list)
     for _, row in df.iterrows():
-        utok = str(row[uid_col]).strip()
-        itok = str(row[iid_col]).strip()
+        utok = _norm_tok(row[uid_col])
+        itok = _norm_tok(row[iid_col])
         t = row[time_col]
         if utok not in uid2id or itok not in iid2id:
             continue
@@ -441,8 +454,10 @@ def create_streaming_timeline_dataloader(config, dataset):
     item_list_length_field = config["ITEM_LIST_LENGTH_FIELD"]
     test_ratio = config.final_config_dict.get("streaming_test_ratio", 0.1)
 
+    rating_field = config.final_config_dict.get("RATING_FIELD", None)
     builder = StreamingTimelineBuilder(
-        raw_inter, uid_field, iid_field, time_field, test_ratio=test_ratio
+        raw_inter, uid_field, iid_field, time_field,
+        test_ratio=test_ratio, rating_field=rating_field,
     )
     initial_user_history = _load_pretrain_user_histories(config, dataset)
     return StreamingTimelineDataLoader(

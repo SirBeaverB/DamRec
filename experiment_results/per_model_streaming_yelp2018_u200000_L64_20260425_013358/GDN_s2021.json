@@ -1,0 +1,24 @@
+{
+  "dataset": "yelp2018",
+  "data_tag": "u200000",
+  "model": "GDN",
+  "model_name": "GDN",
+  "seed": 2021,
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_yelp2018_u200000_L64_s2021",
+  "ckp_path": null,
+  "states_path": "/root/DamRec/saved/per_model_pretrain_yelp2018_u200000_L64_s2021/user_states_GDN.pt",
+  "pretrain_valid": {},
+  "pretrain_test": {},
+  "result": {},
+  "t_sec": null,
+  "mem_gb": null,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": false
+  }
+}

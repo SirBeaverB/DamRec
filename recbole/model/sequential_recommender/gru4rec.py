@@ -80,8 +80,9 @@ class GRU4Rec(SequentialRecommender):
         item_seq_emb_dropout = self.emb_dropout(item_seq_emb)
         gru_output, _ = self.gru_layers(item_seq_emb_dropout)
         gru_output = self.dense(gru_output)
-        # the embedding of the predicted item, shape of (batch_size, embedding_size)
-        seq_output = self.gather_indexes(gru_output, item_seq_len - 1)
+        # clamp to 0 to guard against item_seq_len=0 (empty streaming history)
+        gather_idx = (item_seq_len - 1).clamp(min=0)
+        seq_output = self.gather_indexes(gru_output, gather_idx)
         return seq_output
 
     def calculate_loss(self, interaction):

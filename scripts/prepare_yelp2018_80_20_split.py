@@ -100,6 +100,39 @@ def main():
         help="非空时：写入 yelp2018-pretrain-{tag}/ 与 yelp2018-t2t-{tag}/。"
         "使用 --max_users / --user_sample_ratio 时必须带本参数，避免覆盖全量目录。",
     )
+    parser.add_argument(
+        "--require_both_periods",
+        action="store_true",
+        default=False,
+        help="若设置：只从在 pretrain 段和 t2t 段都有真实交互的用户里采样，"
+        "消除 t2t 冷启动用户。最多可用用户数约 195k（yelp2018 全量）。",
+    )
+    parser.add_argument(
+        "--min_user_inter",
+        type=int,
+        default=None,
+        help="k-core：保留至少有 k 条交互的用户（与 --min_item_inter 迭代直到稳定）。",
+    )
+    parser.add_argument(
+        "--min_item_inter",
+        type=int,
+        default=None,
+        help="k-core：保留至少有 k 条交互的 item（与 --min_user_inter 迭代直到稳定）。",
+    )
+    parser.add_argument(
+        "--min_pretrain_inter",
+        type=int,
+        default=None,
+        help="切分后过滤：只保留在 pretrain 段有至少 k 条真实交互的 user（同时从 t2t 移除）。"
+        "解决全量 k-core 切分后 pretrain 段交互数不足的问题。",
+    )
+    parser.add_argument(
+        "--filter_cold_items",
+        action="store_true",
+        default=False,
+        help="切分后过滤：从 t2t 中移除 pretrain 无真实交互记录的 item（cold item）。"
+        "保留 vocab 对齐 dummy 行以维持词表一致，但真实 t2t 交互只评估 warm item。",
+    )
     args = parser.parse_args()
     if args.max_users is not None and args.max_users < 1:
         raise SystemExit("--max_users 须 >= 1")
@@ -112,6 +145,16 @@ def main():
         raise SystemExit(
             "使用 --max_users 或 --user_sample_ratio 时必须同时指定 --data_tag（如 u5000），"
             "子集会写入独立 dataset 目录，不会覆盖 yelp2018-pretrain / yelp2018-t2t。"
+        )
+    if (args.min_user_inter or args.min_item_inter) and not tag:
+        raise SystemExit(
+            "使用 --min_user_inter / --min_item_inter 时必须同时指定 --data_tag，"
+            "避免覆盖全量默认目录。"
+        )
+    if (args.min_pretrain_inter or args.filter_cold_items) and not tag:
+        raise SystemExit(
+            "使用 --min_pretrain_inter / --filter_cold_items 时必须同时指定 --data_tag，"
+            "避免覆盖全量默认目录。"
         )
 
     if tag:
@@ -144,7 +187,43 @@ def main():
     # 过滤列数不对的脏行
     rows = [r for r in rows if len(r) == len(cols)]
 
-    u_list = list({r[uid_idx] for r in rows})
+    # k-core 过滤（迭代直到稳定）
+    ku = args.min_user_inter
+    ki = args.min_item_inter
+    if ku or ki:
+        prev_len = -1
+        iteration = 0
+        while len(rows) != prev_len:
+            prev_len = len(rows)
+            iteration += 1
+            if ku:
+                import collections as _col
+                u_cnt = _col.Counter(r[uid_idx] for r in rows)
+                keep_u = {u for u, c in u_cnt.items() if c >= ku}
+                rows = [r for r in rows if r[uid_idx] in keep_u]
+            if ki:
+                import collections as _col
+                i_cnt = _col.Counter(r[iid_idx] for r in rows)
+                keep_i = {i for i, c in i_cnt.items() if c >= ki}
+                rows = [r for r in rows if r[iid_idx] in keep_i]
+        n_u_core = len({r[uid_idx] for r in rows})
+        n_i_core = len({r[iid_idx] for r in rows})
+        print(f"[k-core] min_user={ku} min_item={ki}, {iteration} 轮迭代 -> "
+              f"{n_u_core} 用户, {n_i_core} item, {len(rows)} 条交互")
+
+    # 预切分：找出在全量 80/20 边界两侧都有交互的用户（用于 --require_both_periods）
+    if args.require_both_periods:
+        _rows_sorted = sorted(rows, key=lambda r: float(r[ts_idx]) if r[ts_idx].replace('.','',1).isdigit() else 0.0)
+        _split = int(len(_rows_sorted) * PRETRAIN_RATIO)
+        _pre_users = {r[uid_idx] for r in _rows_sorted[:_split]}
+        _t2t_users = {r[uid_idx] for r in _rows_sorted[_split:]}
+        _both = _pre_users & _t2t_users
+        rows = [r for r in rows if r[uid_idx] in _both]  # 先过滤掉单段用户
+        u_list = sorted(_both)
+        print(f"[require_both_periods] 全量预切分: pretrain_users={len(_pre_users)}, "
+              f"t2t_users={len(_t2t_users)}, both={len(_both)}, rows保留={len(rows)}")
+    else:
+        u_list = sorted({r[uid_idx] for r in rows})
     n_u = len(u_list)
     if args.max_users is not None:
         k = min(args.max_users, n_u)
@@ -172,7 +251,7 @@ def main():
     else:
         print(f"[user subset] 全量: {n_u} 用户, {len(rows)} 条交互")
 
-    # 按 timestamp 排序
+    # 按 timestamp 排序（stable sort，tie 保留原文件顺序）
     def _ts(r):
         try:
             return float(r[ts_idx])
@@ -184,6 +263,33 @@ def main():
     split_idx = int(n * PRETRAIN_RATIO)
     pretrain_rows = rows[:split_idx]
     t2t_rows = rows[split_idx:]
+
+    # ── 切分后过滤 1：min_pretrain_inter ──────────────────────────────────────
+    if args.min_pretrain_inter:
+        import collections as _col
+        kp = args.min_pretrain_inter
+        pre_u_cnt = _col.Counter(r[uid_idx] for r in pretrain_rows)
+        keep_u = {u for u, c in pre_u_cnt.items() if c >= kp}
+        n_drop_u = len(pre_u_cnt) - len(keep_u)
+        pretrain_rows = [r for r in pretrain_rows if r[uid_idx] in keep_u]
+        t2t_rows      = [r for r in t2t_rows      if r[uid_idx] in keep_u]
+        print(f"[min_pretrain_inter={kp}] 移除 {n_drop_u} 个 pretrain 段交互不足 user "
+              f"-> pretrain {len(pretrain_rows)} 行, t2t {len(t2t_rows)} 行")
+
+    # ── 切分后过滤 2：filter_cold_items ───────────────────────────────────────
+    if args.filter_cold_items:
+        warm_items = {r[iid_idx] for r in pretrain_rows}
+        n_t2t_before = len(t2t_rows)
+        t2t_rows = [r for r in t2t_rows if r[iid_idx] in warm_items]
+        n_cold_dropped = n_t2t_before - len(t2t_rows)
+        print(f"[filter_cold_items] 从 t2t 移除 {n_cold_dropped} 条 cold item 交互 "
+              f"({n_cold_dropped/max(1,n_t2t_before)*100:.1f}%) "
+              f"-> t2t {len(t2t_rows)} 行")
+
+    if not pretrain_rows:
+        raise SystemExit("过滤后 pretrain 为空，检查 --min_pretrain_inter / --max_users 参数。")
+    if not t2t_rows:
+        raise SystemExit("过滤后 t2t 为空，检查 --filter_cold_items / --min_pretrain_inter 参数。")
 
     users_pretrain = {r[uid_idx] for r in pretrain_rows}
     users_t2t = {r[uid_idx] for r in t2t_rows}

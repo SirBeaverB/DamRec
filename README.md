@@ -271,40 +271,116 @@ python scripts/download_yelp2018.py
 
 下载失败时：手动从上述 URL 拉 zip 到 `dataset/yelp2018.zip`，再重跑 `download_yelp2018.py` 会自动解压校验。
 
-**Step 1: 80/20 时间切分（全量 与 子集 可并存：子集用独立目录，不覆盖全量）**
+**Step 1: 80/20 时间切分**
 
-- **全量**（不写 `--data_tag`）：写入默认路径（与旧版一致），会**覆盖**更新：
-  - `dataset/yelp2018-pretrain/yelp2018-pretrain.inter`
-  - `dataset/yelp2018-t2t/yelp2018-t2t.inter`
-- **用户子集**（`--max_users` 或 `--user_sample_ratio`）**必须**同时指定 **`--data_tag` 某标签**，例如 `u5000`，生成**另一套**目录，不碰全量：
-  - `dataset/yelp2018-pretrain-u5000/yelp2018-pretrain-u5000.inter`
-  - `dataset/yelp2018-t2t-u5000/yelp2018-t2t-u5000.inter`  
-- 占位行 (rating=0) 与可选复制 `.user` / `.item` 的语义同前。
+占位行 (rating=0) 用于词表对齐，**不参与流式 T2T 评估**（streaming_timeline 自动过滤）。所有子集写入独立目录，不覆盖全量。
 
-**A. 全量 Yelp**：
+**推荐正式实验：5-core + 切分后清洗（clean 版）**
+
+全量数据先做 k-core（用户和 item 各 ≥5 条交互，迭代至稳定），再 80/20 切分，最后做两步切分后清洗：
+
+| 参数 | 解决的问题 |
+|---|---|
+| `--min_pretrain_inter 5` | 全量 5-core 切分后，pretrain 段仍有 17.9% 用户交互数 <5（碎片 user 无法建立有效状态），此参数移除这批用户 |
+| `--filter_cold_items` | t2t 段有 8.5% item 从未在 pretrain 出现（embedding 未训练，无法被推荐），占 t2t 交互 12.4%，系统性压低所有模型 recall，此参数从 t2t 中移除这些交互（vocab dummy 行保留，词表对齐不受影响） |
+
+```bash
+# 正式实验推荐：5-core 全量，切分后清洗
+python scripts/prepare_yelp2018_80_20_split.py \
+    --data_tag 5core_clean \
+    --min_user_inter 5 \
+    --min_item_inter 5 \
+    --min_pretrain_inter 5 \
+    --filter_cold_items \
+    --seed 42
+
+# 5-core 中随机采 100k（加速多 seed 实验）
+python scripts/prepare_yelp2018_80_20_split.py \
+    --data_tag u100k_5core_clean \
+    --max_users 100000 \
+    --min_user_inter 5 \
+    --min_item_inter 5 \
+    --min_pretrain_inter 5 \
+    --filter_cold_items \
+    --seed 42
+```
+
+> 不加 `--min_pretrain_inter` / `--filter_cold_items` 的旧 tag（`u100k_5core`）仍可使用，对所有模型一致，可在论文中作为对照组说明清洗前后指标变化。
+
+5-core 后数据规模（clean 版数值以实际脚本输出为准）：
+
+| | 全量 | 5-core | 5-core clean |
+|---|---|---|---|
+| 用户数 | ~1,065k | ~213k | 略减（移除 pretrain <5 的 user） |
+| item 数 | ~150k | ~94k | 不变 |
+| pretrain 交互 | — | ~2.6M | 略减 |
+| t2t 交互 | — | ~306k | ~269k（-12.4%，移除 cold item 交互） |
+| 平均 pretrain 交互/user | 4.9 | 15.4 | ≥5 保证 |
+
+**已知数据特性与固有局限（论文须说明）**
+
+| 特性 | 影响 | 处理方式 |
+|---|---|---|
+| Yelp timestamp 天级精度：51.9% pretrain 行同 user 同天，顺序未知 | 序列模型（GDN/Adam/Fro）状态更新受噪声影响；各模型一致 | 保留原始文件顺序（stable sort），不人为引入假顺序 |
+| 97.5% 用户 pretrain 交互数 <64（均值 13）| L=64 时大量 padding，causal conv / attention 信号被稀释 | 可加 `--max_seq_len 20` 跑对比组；L=20 覆盖约 80% 用户完整历史 |
+| t2t 每用户平均 1.09 个 test 点，40.5% 用户 <3 条 t2t 交互 | 指标方差大；需多 seed（建议 3 个）| 已通过 min_pretrain_inter + 5-core 尽量保留双段用户 |
+| Yelp 评论行为非强序列性（不同于 ML-1M 的电影消费） | 序列模型对 Yelp 的提升空间天然小于 ML-1M | 论文中作为补充数据集，重点对比方法间相对排名 |
+
+**A. 全量 Yelp（不过滤）**：
 
 ```bash
 python scripts/prepare_yelp2018_80_20_split.py
 ```
 
-**B. 5000 用户子集**（`--data_tag` 可自取，与 Step 2 的 `--data_tag` 保持一致即可）：
+**B. 小规模子集（快速调试）**：
 
 ```bash
 python scripts/prepare_yelp2018_80_20_split.py --data_tag u5000 --max_users 5000 --seed 42
 ```
 
-也支持 `--user_sample_ratio 0.1`（与 `--max_users` 同时给时以 `--max_users` 为准）。子集上的绝对指标**不要与全量直接对比**；适合管线、相对强弱、多 seed 预扫。
+也支持 `--user_sample_ratio 0.1`。子集绝对指标不要与全量直接对比。
 
-**Step 2 里如何选择数据集**  
+**C. 暖用户采样（`--require_both_periods`，已被 5-core 替代，不推荐新实验使用）**
 
-- 跑**全量**：**不要**传 `--data_tag`（读默认 `yelp2018-pretrain` / `yelp2018-t2t`）。  
-- 跑**子集**：在 `run_per_model_pretrain_t2t_yelp2018.py` 上**加上与 Step 1 相同**的 `--data_tag u5000`，读带后缀的 RecBole dataset 名，checkpoint 在 `saved/per_model_pretrain_yelp2018_u5000_L{L}_s{seed}/`，**不会**与全量 ckp 混目录。
-
-**一键示例**（5000 用户 + 四模型；需已完成 Step 0）：
+5-core 前的替代方案：只从 pretrain 段和 t2t 段均有交互的用户中采样（约 195k 上限）。现在有了 5-core，无需此参数。保留供参考。
 
 ```bash
-python scripts/prepare_yelp2018_80_20_split.py --data_tag u5000 --max_users 5000 --seed 42
-python scripts/run_per_model_pretrain_t2t_yelp2018.py --data_tag u5000 --models GDN,Adam,Fro,GRU4Rec
+python scripts/prepare_yelp2018_80_20_split.py \
+    --data_tag u150k_warm \
+    --max_users 150000 \
+    --seed 42 \
+    --require_both_periods
+```
+
+**Step 2 里如何选择数据集**
+
+跑**子集**：在 `run_per_model_pretrain_t2t_yelp2018.py` 加上与 Step 1 相同的 `--data_tag`，checkpoint 写入 `saved/per_model_pretrain_yelp2018_{tag}_L{L}_s{seed}/`，不与其他 tag 混目录。
+
+**一键示例**（100k 5-core clean，正式实验；需已完成 Step 0）：
+
+```bash
+# Step 1：生成 clean 数据集
+python scripts/prepare_yelp2018_80_20_split.py \
+    --data_tag u100k_5core_clean \
+    --max_users 100000 \
+    --min_user_inter 5 \
+    --min_item_inter 5 \
+    --min_pretrain_inter 5 \
+    --filter_cold_items \
+    --seed 42
+
+# Step 2：跑实验
+python scripts/run_per_model_pretrain_t2t_yelp2018.py \
+    --data_tag u100k_5core_clean \
+    --models GDN,Adam,Fro,GRU4Rec \
+    --seeds 2020,2021,2022 \
+    --n_gpus 2
+
+# Step 3：pop baseline（与 Step 1 tag 一致）
+python scripts/run_popularity_baseline_streaming.py \
+    --dataset yelp2018 \
+    --data-tag u100k_5core_clean \
+    -L 64
 ```
 
 全量仍在磁盘上时，想跑全量实验：用 Step 1A 重刷默认目录，或不动子集、直接**不带** `--data_tag` 跑 Step 2 即可（前提：默认目录下已是你要的全量切分）。
@@ -344,7 +420,158 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_per_model_pretrain_t2t_yelp2018.py --m
 - `experiment_results/per_model_streaming_yelp2018[_{tag}]_L{L}_{timestamp}.txt` / `.csv`：文首含 **PRETRAIN 离线** valid/test 块，再是 **T2T 流式** 块；CSV 另含 `pretrain_valid_*` / `pretrain_test_*` 列
 - `experiment_results/per_model_streaming_yelp2018[_{tag}]_L{L}_{timestamp}/`: 每 `{Model}_s{seed}.log` 与 `00_manifest.txt`（`data_tag` 在 manifest 中也会记录）
 
+**Step 3: Popularity Baseline（与模型结果对照的地板线）**
+
+与 Step 2 使用**完全相同的 `--data_tag`**，test 点定义一致（per-user 尾部 10%）。纯 CPU，< 1 分钟出结果。
+
+两个基线：
+- **POP_global**：所有用户共享 pretrain 全局 item 频次 top-10，最弱基线
+- **POP_user**：全局热门中排除该用户在 pretrain 里已见过的 item，取前 10（popular unseen），理论上 ≥ POP_global
+
+```bash
+# 全量默认数据集
+python scripts/run_popularity_baseline_streaming.py --dataset yelp2018
+
+# 指定 data_tag（与 Step 1/2 保持一致）
+python scripts/run_popularity_baseline_streaming.py \
+    --dataset yelp2018 \
+    --data-tag u100k_5core \
+    -L 64
+
+# 5-core 全量
+python scripts/run_popularity_baseline_streaming.py \
+    --dataset yelp2018 \
+    --data-tag 5core \
+    -L 64
+```
+
+输出 `experiment_results/popularity_baseline_streaming_yelp2018_{tag}_L{L}_{ts}.txt`，含数据规模统计（活跃用户数、暖/冷用户比例）与 Recall/NDCG/MRR @10。
+
 **注意**：yelp2018 约 1.5M 交互、31k user、38k item（比 ml-1m 稍大），跨度约 14 年（2004-2018），80/20 切后漂移**更严重**。预期上若仍是 popularity 天花板说明流式 T2T 协议本身在长时漂移数据上普遍失效；若 yelp2018 上 Fro/GDN 差距显著 > 0，则证实 ml-1m 结果是数据集特性，不是方法失效。
+
+#### 场景 K：ML-10M 稠密子集 streaming T2T（稠密序列验证）
+
+ML-10M（~71k users，~10k items，avg ~140 inter/user）是验证 Adam 系模型在稠密序列上优势的推荐数据集。item 空间比 ML-1M 大 3x（10k vs 3.7k），POP 不再主导；avg 序列长度保证 M/V 估计可靠（ML-1M avg ~8，ML-10M avg ~140）。
+
+**Step 0: 下载并转换 ML-10M**
+
+```bash
+python scripts/download_ml10m.py
+# 产物: dataset/ml-10m/ml-10m.inter
+# 下载失败时：手动下载 https://files.grouplens.org/datasets/movielens/ml-10m.zip 到 dataset/ml-10m.zip，再重跑
+```
+
+**Step 1: 准备稠密子集（推荐正式实验）**
+
+```bash
+# 推荐：20k 稠密用户（avg ~100 inter/user，item ~10k，dump ~1.5h/model）
+python scripts/prepare_ml10m_80_20_split.py \
+    --data_tag dense_u20k \
+    --max_users 20000 \
+    --min_user_inter 20 \
+    --min_item_inter 5 \
+    --min_pretrain_inter 20 \
+    --filter_cold_items \
+    --seed 42
+
+# 小规模 smoke test（2k 用户）
+python scripts/prepare_ml10m_80_20_split.py \
+    --data_tag u2k_test \
+    --max_users 2000 \
+    --min_user_inter 10 \
+    --seed 42
+```
+
+| 参数 | 作用 |
+|---|---|
+| `--max_users 20000` | 随机采 20k 用户，控制 dump 时间（全量 71k → ~5h/model，20k → ~1.5h/model） |
+| `--min_user_inter 20` | k-core：只保留 ≥20 条交互的用户，确保序列稠密 |
+| `--min_item_inter 5` | k-core：只保留 ≥5 条交互的 item，减少冷门 item |
+| `--min_pretrain_inter 20` | 切分后：移除 pretrain 段不足 20 条的用户 |
+| `--filter_cold_items` | 切分后：t2t 中移除 pretrain 未见过的 item（避免 embedding 未训练的 item 压低 recall） |
+
+预期数据规模（`dense_u20k`）：
+
+| | 值 |
+|---|---|
+| 用户数 | ~20k |
+| item 数 | ~10k |
+| avg pretrain inter/user | ~100 |
+| pretrain 总交互 | ~2M |
+| 预计 dump 时间 | ~1.5h/model（单卡顺序） |
+
+**Step 2: 跑实验**
+
+```bash
+python scripts/run_per_model_pretrain_t2t_ml10m.py \
+    --data_tag dense_u20k \
+    --models GDN,Adam,Fro,GRU4Rec \
+    --seeds 2020 \
+    --max_seq_len 64 \
+    --n_gpus 2
+```
+
+**Step 3: Popularity baseline**
+
+```bash
+python scripts/run_popularity_baseline_streaming.py \
+    --dataset ml-10m \
+    --data-tag dense_u20k \
+    -L 64
+```
+
+**与其他数据集对比**：
+
+| 数据集 | users | items | avg inter/user | Adam vs GDN 预期 | POP 是否主导 |
+|---|---|---|---|---|---|
+| ML-1M | 6k | 3.7k | ~165 | Adam≈GDN（item 少，POP 主导） | 是（POP≈Adam） |
+| Yelp2018 5core 100k | 100k | 94k | ~13 | GDN>Adam（序列过稀，M/V 噪声大） | 否（item 多）|
+| **ML-10M dense_u20k** | ~20k | ~10k | ~100 | **Adam>GDN（稠密，M/V 可靠；item 适中，POP 不主导）** | 否 |
+
+**场景 K-消融：streaming ratio 消融（验证 DamRec 优势来自流式学习）**
+
+`--pretrain_ratio` 参数支持任意 pretrain/T2T 切分比，用于消融：DamRec 的优势是否随流式占比增大而增大。若是，则证明其核心优势来自内层 Adam-style state update 的在线学习效率，而非预训练质量。
+
+```bash
+# 40/60（主消融：60% 流式，给 Adam-style 更长的在线适应窗口）
+python scripts/prepare_ml10m_80_20_split.py \
+    --data_tag dense_u20k_40_60 \
+    --pretrain_ratio 0.4 \
+    --max_users 20000 \
+    --min_user_inter 20 \
+    --min_item_inter 5 \
+    --min_pretrain_inter 10 \
+    --filter_cold_items \
+    --seed 42
+
+# 60/40（对照）
+python scripts/prepare_ml10m_80_20_split.py \
+    --data_tag dense_u20k_60_40 \
+    --pretrain_ratio 0.6 \
+    --max_users 20000 \
+    --min_user_inter 20 \
+    --min_item_inter 5 \
+    --min_pretrain_inter 15 \
+    --filter_cold_items \
+    --seed 42
+```
+
+| pretrain_ratio | pretrain inter/user | T2T inter/user | 预期 DamRec vs GDN Δ% |
+|---|---|---|---|
+| 0.8（默认） | ~80 | ~28 | 基准 |
+| 0.6 | ~60 | ~47 | 应扩大 |
+| 0.4 | ~46 | ~69 | 应更大 |
+
+跑实验时 `--data_tag` 与 prepare 保持一致：
+
+```bash
+python scripts/run_per_model_pretrain_t2t_ml10m.py \
+    --data_tag dense_u20k_40_60 \
+    --models GDN,Adam,Fro \
+    --seeds 2020 \
+    --max_seq_len 64 \
+    --n_gpus 2
+```
 
 ##### 场景 G 数据如何被使用（数据流详解）
 

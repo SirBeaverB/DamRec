@@ -11,8 +11,7 @@ Popularity baselines for streaming T2T evaluation on ml-1m (80/20).
 
 两个基线：
   POP_global  永远推荐 ml-1m-pretrain 全局频次 top-10 item（最弱基线，不看 user）
-  POP_user    推荐该用户在 ml-1m-pretrain 历史中频次 top-10 item，
-              不足 10 个补 POP_global
+  POP_user    推荐全局热门中该用户在 pretrain 里未见过的 top-10 item（popular unseen）
 
 数据筛选：
   剔除 rating=0 的占位行（prepare_ml1m_80_20_split.py 注入的词表对齐 dummy）。
@@ -93,44 +92,46 @@ def _build_user_history(rows):
     return by_user
 
 
-def _topk_metrics(rank, k=10):
+def _topk_metrics(rank, k):
     """rank: 1-based position, or None if not in top-k."""
     if rank is None or rank > k:
         return 0.0, 0.0, 0.0
     return 1.0, 1.0 / math.log2(rank + 1), 1.0 / rank
 
 
-def _eval_pop_global(test_points, pop_counter, k=10):
-    top_k = [iid for iid, _ in pop_counter.most_common(k)]
-    item_to_rank = {iid: r + 1 for r, iid in enumerate(top_k)}
-    rec, ndcg, mrr = 0.0, 0.0, 0.0
+def _eval_pop_global(test_points, pop_counter, ks=(10, 20, 50)):
+    max_k = max(ks)
+    top_items = [iid for iid, _ in pop_counter.most_common(max_k)]
+    item_to_rank = {iid: r + 1 for r, iid in enumerate(top_items)}
+    acc = {k: [0.0, 0.0, 0.0] for k in ks}
     for _uid, target in test_points:
-        r = item_to_rank.get(target)
-        a, b, c = _topk_metrics(r, k=k)
-        rec += a; ndcg += b; mrr += c
+        rank = item_to_rank.get(target)
+        for k in ks:
+            a, b, c = _topk_metrics(rank, k)
+            acc[k][0] += a; acc[k][1] += b; acc[k][2] += c
     n = len(test_points)
-    return rec / n, ndcg / n, mrr / n
+    return {k: tuple(v / n for v in acc[k]) for k in ks}
 
 
-def _eval_pop_user(test_points, user_history, pop_counter, k=10):
-    """每 user：自己历史中 top-k；不足补全局热门（去重）。"""
-    global_top = [iid for iid, _ in pop_counter.most_common(k * 3)]  # 备用够长
-    rec, ndcg, mrr = 0.0, 0.0, 0.0
+def _eval_pop_user(test_points, user_history, pop_counter, ks=(10, 20, 50)):
+    """每 user：全局热门中排除 pretrain 已见 item，按 ks 最大值截取（popular unseen）。"""
+    max_k = max(ks)
+    global_top = [iid for iid, _ in pop_counter.most_common()]
+    acc = {k: [0.0, 0.0, 0.0] for k in ks}
     for uid, target in test_points:
-        seen = user_history.get(uid, Counter())
-        ranking = [iid for iid, _ in seen.most_common(k)]
-        if len(ranking) < k:
-            for iid in global_top:
-                if iid not in ranking:
-                    ranking.append(iid)
-                if len(ranking) >= k:
-                    break
-        ranking = ranking[:k]
+        seen = set(user_history.get(uid, {}).keys())
+        ranking = []
+        for iid in global_top:
+            if iid not in seen:
+                ranking.append(iid)
+            if len(ranking) >= max_k:
+                break
         rank = (ranking.index(target) + 1) if target in ranking else None
-        a, b, c = _topk_metrics(rank, k=k)
-        rec += a; ndcg += b; mrr += c
+        for k in ks:
+            a, b, c = _topk_metrics(rank, k)
+            acc[k][0] += a; acc[k][1] += b; acc[k][2] += c
     n = len(test_points)
-    return rec / n, ndcg / n, mrr / n
+    return {k: tuple(v / n for v in acc[k]) for k in ks}
 
 
 def main():
@@ -175,12 +176,15 @@ def main():
     n_users_t2t = len(t2t_users)
     n_test = len(test_points)
 
-    rec_g, ndcg_g, mrr_g = _eval_pop_global(test_points, pop_counter, k=10)
-    rec_u, ndcg_u, mrr_u = _eval_pop_user(test_points, user_hist, pop_counter, k=10)
+    KS = (10, 20, 50)
+    res_g = _eval_pop_global(test_points, pop_counter, ks=KS)
+    res_u = _eval_pop_user(test_points, user_hist, pop_counter, ks=KS)
 
-    # 简单理论参考：纯随机 = 10 / num_unique_items
     n_items = len(pop_counter)
-    random_recall = 10.0 / n_items if n_items else 0.0
+    n_users_pretrain = len(user_hist)
+    n_users_both = len(set(user_hist.keys()) & set(t2t_users.keys()))
+    n_users_only_pretrain = n_users_pretrain - n_users_both
+    n_users_coldstart = n_users_t2t - n_users_both
 
     out_dir = args.output_dir or os.path.join(PROJ, "experiment_results")
     os.makedirs(out_dir, exist_ok=True)
@@ -190,7 +194,22 @@ def main():
     txt_path = os.path.join(out_dir, f"popularity_baseline_streaming_{tag}_{ts}.txt")
     csv_path = os.path.join(out_dir, f"popularity_baseline_streaming_{tag}_{ts}.csv")
 
-    label_w, col_w = 14, 14
+    label_w, col_w = 16, 14
+    sep = "-" * (label_w + col_w * 2)
+
+    def _metric_rows(ks, res_g, res_u):
+        rows = []
+        for k in ks:
+            rg, ng, mg = res_g[k]
+            ru, nu, mu = res_u[k]
+            rows += [
+                f"{'recall@'+str(k):<{label_w}}{rg:<{col_w}.4f}{ru:<{col_w}.4f}",
+                f"{'ndcg@'+str(k):<{label_w}}{ng:<{col_w}.4f}{nu:<{col_w}.4f}",
+                f"{'mrr@'+str(k):<{label_w}}{mg:<{col_w}.4f}{mu:<{col_w}.4f}",
+                "",
+            ]
+        return rows
+
     lines = [
         "=" * 90,
         f"Popularity Baselines for Streaming T2T Evaluation ({args.dataset}{data_tag_part} 80/20)",
@@ -198,12 +217,12 @@ def main():
         "",
         "[实验情景]",
         "  与 scripts/run_per_model_pretrain_t2t_1m.py 共享 test 点定义：",
-        "  ml-1m-t2t 内每用户按 timestamp 排序，尾部 max(1, int(n*test_ratio)) 为 test 点。",
+        f"  {args.dataset}-t2t 内每用户按 timestamp 排序，尾部 max(1, int(n*test_ratio)) 为 test 点。",
         "  此脚本不训练任何模型，只用 pretrain 的 item 频次做 popularity 推荐。",
         "",
         "[基线说明]",
-        "  POP_global  永远推荐 pretrain 全局频次 top-10 item（不看 user，最弱基线）",
-        "  POP_user    推荐用户在 pretrain 历史中频次最高的 item，不足 10 个补全局热门",
+        "  POP_global  永远推荐 pretrain 全局频次 top-K item（不看 user，最弱基线）",
+        "  POP_user    推荐全局热门中该用户在 pretrain 里未见过的 item（popular unseen）",
         "",
         "[与 streaming pipeline 的差异]",
         "  本脚本剔除 rating=0 的占位行，得到 clean 基线；流式 pipeline 不过滤。",
@@ -211,26 +230,27 @@ def main():
         "",
         "[数据规模]",
         f"  pretrain 真实交互 = {len(pretrain_rows):>10}",
-        f"  pretrain 唯一 item = {n_items:>10}",
-        f"  pretrain 唯一 user = {len(user_hist):>10}",
+        f"  pretrain 活跃 item = {n_items:>10}",
+        f"  pretrain 活跃 user = {n_users_pretrain:>10}  (在 pretrain 段有真实交互)",
         f"  t2t 真实交互       = {len(t2t_rows):>10}",
-        f"  t2t 唯一 user      = {n_users_t2t:>10}",
+        f"  t2t 活跃 user      = {n_users_t2t:>10}  (在 t2t 段有真实交互)",
+        f"    其中 pretrain+t2t 均有 = {n_users_both:>8}  (暖用户，有 pretrain 状态)",
+        f"    其中仅出现在 t2t      = {n_users_coldstart:>8}  (冷启动，无 pretrain 状态)",
+        f"    仅出现在 pretrain     = {n_users_only_pretrain:>8}  (不参与 t2t 评估)",
         f"  test 点总数       = {n_test:>10}  (test_ratio={args.test_ratio})",
         f"  平均 test 点/user  = {n_test/max(1,n_users_t2t):>10.2f}",
         "",
-        "-" * 90,
-        "TEST  —  Recall / NDCG / MRR @10  (越大越好)",
-        "-" * 90,
+        sep,
+        "TEST  —  Recall / NDCG / MRR @K  (越大越好)",
+        sep,
         f"{'Metric':<{label_w}}{'POP_global':<{col_w}}{'POP_user':<{col_w}}",
-        "-" * (label_w + col_w * 2),
-        f"{'recall@10':<{label_w}}{rec_g:<{col_w}.4f}{rec_u:<{col_w}.4f}",
-        f"{'ndcg@10':<{label_w}}{ndcg_g:<{col_w}.4f}{ndcg_u:<{col_w}.4f}",
-        f"{'mrr@10':<{label_w}}{mrr_g:<{col_w}.4f}{mrr_u:<{col_w}.4f}",
-        "",
-        f"[理论参考] 纯随机 Recall@10 ≈ 10/{n_items} = {random_recall:.5f}",
+        sep,
+        *_metric_rows(KS, res_g, res_u),
+        f"[理论参考] 纯随机 Recall@10 ≈ {10.0/n_items:.5f}  "
+        f"@20 ≈ {20.0/n_items:.5f}  @50 ≈ {50.0/n_items:.5f}  (10/N, 20/N, 50/N where N={n_items})",
         "",
         "[判读指南]",
-        "  对照 per_model_streaming_L*.txt 里 5 模型的 Recall@10：",
+        "  对照 per_model_streaming_L*.txt 里各模型的 Recall@K：",
         "    模型 < POP_global             → 模型完全没学到，严重病理",
         "    POP_global ≤ 模型 < POP_user  → 只学到流行偏好，未学到用户个性化",
         "    模型 ≥ POP_user               → 真正学到了用户级信号，方法有效",
@@ -244,10 +264,14 @@ def main():
         f.write(table + "\n")
     print(f"\nTXT: {txt_path}")
 
+    csv_cols = []
+    for k in KS:
+        csv_cols += [f"recall@{k}", f"ndcg@{k}", f"mrr@{k}"]
     with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("baseline,recall@10,ndcg@10,mrr@10,n_test_points,n_t2t_users,test_ratio\n")
-        f.write(f"POP_global,{rec_g:.4f},{ndcg_g:.4f},{mrr_g:.4f},{n_test},{n_users_t2t},{args.test_ratio}\n")
-        f.write(f"POP_user,{rec_u:.4f},{ndcg_u:.4f},{mrr_u:.4f},{n_test},{n_users_t2t},{args.test_ratio}\n")
+        f.write("baseline," + ",".join(csv_cols) + ",n_test_points,n_t2t_users,test_ratio\n")
+        for name, res in [("POP_global", res_g), ("POP_user", res_u)]:
+            vals = ",".join(f"{res[k][i]:.4f}" for k in KS for i in range(3))
+            f.write(f"{name},{vals},{n_test},{n_users_t2t},{args.test_ratio}\n")
     print(f"CSV: {csv_path}")
 
 
