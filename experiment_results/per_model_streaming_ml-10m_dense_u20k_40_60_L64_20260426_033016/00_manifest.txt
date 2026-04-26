@@ -1,0 +1,13 @@
+=== Per-model Pretrain + Streaming T2T on ml-10m ===
+start     = 2026-04-26T03:30:16.982692
+work_dir  = /root/DamRec/experiment_results/per_model_streaming_ml-10m_dense_u20k_40_60_L64_20260426_033016
+run_id    = 20260426_033016
+argv      = ['scripts/run_per_model_pretrain_t2t_ml10m.py', '--data_tag', 'dense_u20k_40_60', '--models', 'GDN,Adam,Fro,GRU4Rec', '--seeds', '2020', '--max_seq_len', '64', '--n_gpus', '2', '--skip_pretrain', '--skip_dump', '--reset_mv']
+data_tag  = 'dense_u20k_40_60'  (None=默认 ml-10m-pretrain / ml-10m-t2t)
+host CUDA = (unset)
+slot GPUs = ['0', '1']
+models    = ['GDN', 'Adam', 'Fro', 'GRU4Rec']
+seeds     = [2020]
+L         = 64
+epochs    = 150
+t2t_lr    = 0.0001

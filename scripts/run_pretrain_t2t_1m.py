@@ -280,7 +280,7 @@ def run_state_dump(ckp_path, save_path=None, model_name=None, config_file=None, 
     return save_path
 
 
-def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, max_seq_len=None, zero_shot=False, user_states_path=None, seed=None):
+def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, max_seq_len=None, zero_shot=False, user_states_path=None, seed=None, reset_mv=False):
     """从 checkpoint 加载，在 T2T_OVERRIDES['dataset']（默认 ml-1m-t2t）上运行流式 T2T。
     t2t_model: 若指定且与 checkpoint 中的 model 不同，则用 strict=False 做「嫁接」：
        用 GDN 的离线权重热启动 MoRec/NestRec/DamRec/FroRec，M/V 从 0 吸收流式数据。
@@ -370,7 +370,22 @@ def run_t2t_from_ckp(ckp_path, show_progress=True, t2t_model=None, t2t_lr=None, 
     ckp_dir = os.path.dirname(ckp_path) if os.path.isfile(ckp_path) else ckp_path
     states_file = user_states_path or os.path.join(ckp_dir, f"user_states_{model_name}.pt")
     if os.path.isfile(states_file) and hasattr(model, "_streaming_state"):
-        model._streaming_state = torch.load(states_file, map_location=config["device"], weights_only=False)
+        loaded_states = torch.load(states_file, map_location=config["device"], weights_only=False)
+        if reset_mv and model_name == "DamRec":
+            n_reset = 0
+            for uid, state in loaded_states.items():
+                # DamRec state = (S_tuple, Vr_tuple, Vk_tuple, cum, ...)
+                # GDN/FroRec states differ — only reset DamRec's Adam moments
+                if not (isinstance(state[1], (list, tuple)) and len(state[1]) > 0 and isinstance(state[1][0], torch.Tensor)):
+                    continue
+                zero_vr = tuple(torch.zeros_like(v) for v in state[1])
+                zero_vk = tuple(torch.zeros_like(v) for v in state[2])
+                loaded_states[uid] = (state[0], zero_vr, zero_vk) + state[3:]
+                n_reset += 1
+            logger.info(set_color("reset_mv=True:", "yellow") + f" V_r/V_k zeroed for {n_reset} DamRec users, S preserved")
+        elif reset_mv:
+            logger.info(set_color("reset_mv=True:", "yellow") + f" skipped for {model_name} (not DamRec)")
+        model._streaming_state = loaded_states
         logger.info(set_color("Loaded user states from", "green") + f" {states_file} ({len(model._streaming_state)} users)")
 
     peak_mem_gb = None

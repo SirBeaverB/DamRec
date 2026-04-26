@@ -1,0 +1,40 @@
+{
+  "dataset": "ml-10m",
+  "data_tag": "dense_u20k",
+  "model": "GDN",
+  "model_name": "GDN",
+  "seed": 2020,
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_L64_s2020",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_L64_s2020/GDN-Apr-25-2026_17-11-03.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_L64_s2020/user_states_GDN.pt",
+  "pretrain_valid": {},
+  "pretrain_test": {},
+  "result": {
+    "recall@10": 0.0126,
+    "recall@20": 0.0225,
+    "recall@50": 0.051,
+    "mrr@10": 0.0039,
+    "mrr@20": 0.0046,
+    "mrr@50": 0.0054,
+    "ndcg@10": 0.0059,
+    "ndcg@20": 0.0084,
+    "ndcg@50": 0.0139,
+    "hit@10": 0.0126,
+    "hit@20": 0.0225,
+    "hit@50": 0.051,
+    "precision@10": 0.0013,
+    "precision@20": 0.0011,
+    "precision@50": 0.001
+  },
+  "t_sec": 20.873239453998394,
+  "mem_gb": 2.841061592102051,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": true
+  }
+}

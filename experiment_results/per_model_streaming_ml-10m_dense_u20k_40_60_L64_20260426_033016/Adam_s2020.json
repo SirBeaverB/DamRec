@@ -1,0 +1,40 @@
+{
+  "dataset": "ml-10m",
+  "data_tag": "dense_u20k_40_60",
+  "model": "Adam",
+  "model_name": "DamRec",
+  "seed": 2020,
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_40_60_L64_s2020",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_40_60_L64_s2020/DamRec-Apr-25-2026_21-15-49.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_40_60_L64_s2020/user_states_DamRec.pt",
+  "pretrain_valid": {},
+  "pretrain_test": {},
+  "result": {
+    "recall@10": 0.0107,
+    "recall@20": 0.0206,
+    "recall@50": 0.0484,
+    "mrr@10": 0.0028,
+    "mrr@20": 0.0035,
+    "mrr@50": 0.0043,
+    "ndcg@10": 0.0046,
+    "ndcg@20": 0.0071,
+    "ndcg@50": 0.0125,
+    "hit@10": 0.0107,
+    "hit@20": 0.0206,
+    "hit@50": 0.0484,
+    "precision@10": 0.0011,
+    "precision@20": 0.001,
+    "precision@50": 0.001
+  },
+  "t_sec": 32.44890550999844,
+  "mem_gb": 3.5180273056030273,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": true
+  }
+}

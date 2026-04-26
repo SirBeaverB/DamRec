@@ -72,6 +72,7 @@ def _detect_columns(header):
 
 
 def main():
+    global PRETRAIN_RATIO
     parser = argparse.ArgumentParser(
         description="Yelp 80/20 时间切分，可选先按 user 子采样"
     )
@@ -133,6 +134,12 @@ def main():
         help="切分后过滤：从 t2t 中移除 pretrain 无真实交互记录的 item（cold item）。"
         "保留 vocab 对齐 dummy 行以维持词表一致，但真实 t2t 交互只评估 warm item。",
     )
+    parser.add_argument(
+        "--pretrain_ratio",
+        type=float,
+        default=0.8,
+        help="pretrain 占比，默认 0.8；设 0.4 得到 40/60 切分。范围 (0,1)。",
+    )
     args = parser.parse_args()
     if args.max_users is not None and args.max_users < 1:
         raise SystemExit("--max_users 须 >= 1")
@@ -156,6 +163,10 @@ def main():
             "使用 --min_pretrain_inter / --filter_cold_items 时必须同时指定 --data_tag，"
             "避免覆盖全量默认目录。"
         )
+    pretrain_ratio = args.pretrain_ratio
+    if not (0.0 < pretrain_ratio < 1.0):
+        raise SystemExit(f"--pretrain_ratio 须在 (0,1)，得到 {pretrain_ratio}")
+    PRETRAIN_RATIO = pretrain_ratio
 
     if tag:
         ptn = f"yelp2018-pretrain-{tag}"

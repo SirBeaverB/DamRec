@@ -573,6 +573,57 @@ python scripts/run_per_model_pretrain_t2t_ml10m.py \
     --n_gpus 2
 ```
 
+**场景 K-消融2：reset_mv 消融（消除 pretrain 动量偏差）**
+
+DamRec (Adam inner-loop) 的 V_r/V_k（等价于 Adam 的二阶矩 M/V）在 pretrain 阶段积累旧梯度平方，导致 T2T 开始时有效学习率被压制。`--reset_mv` 在加载 pretrain user states 后将所有用户的 V_r/V_k 清零（保留 S 状态矩阵），使 Adam 以新鲜动量进入 T2T 阶段。
+
+```bash
+# 80/20 + reset_mv（对照：只改动量，不改切分）
+python scripts/run_per_model_pretrain_t2t_ml10m.py \
+    --data_tag dense_u20k \
+    --models GDN,Adam,Fro,GRU4Rec \
+    --seeds 2020 \
+    --max_seq_len 64 \
+    --n_gpus 2 \
+    --skip_pretrain \
+    --skip_dump \
+    --reset_mv
+
+# 40/60 + reset_mv（两者叠加）
+python scripts/run_per_model_pretrain_t2t_ml10m.py \
+    --data_tag dense_u20k_40_60 \
+    --models GDN,Adam,Fro,GRU4Rec \
+    --seeds 2020 \
+    --max_seq_len 64 \
+    --n_gpus 2 \
+    --skip_pretrain \
+    --skip_dump \
+    --reset_mv
+```
+
+Yelp2018 同理：
+
+```bash
+python scripts/run_per_model_pretrain_t2t_yelp2018.py \
+    --data_tag u100k_5core_clean \
+    --models GDN,Adam,Fro,GRU4Rec \
+    --seeds 2020 \
+    --max_seq_len 20 \
+    --n_gpus 2 \
+    --skip_pretrain \
+    --skip_dump \
+    --reset_mv
+```
+
+| 实验条件 | GDN r@10 | Adam r@10 | Δ(Adam-GDN) |
+|---|---|---|---|
+| ML-10M 80/20（无 reset） | 0.0126 | 0.0089 | -29.4% |
+| ML-10M 40/60（无 reset） | 0.0087 | 0.0107 | +23.0% |
+| ML-10M 80/20 + reset_mv | TBD | TBD | TBD |
+| ML-10M 40/60 + reset_mv | TBD | TBD | TBD |
+| Yelp2018 80/20（无 reset） | 0.0149 | 0.0131 | -12.1% |
+| Yelp2018 80/20 + reset_mv | TBD | TBD | TBD |
+
 ##### 场景 G 数据如何被使用（数据流详解）
 
 **Step 0：数据集划分（一次性离线做）**

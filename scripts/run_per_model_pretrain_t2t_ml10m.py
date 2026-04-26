@@ -273,6 +273,7 @@ def _worker_main(args):
                 max_seq_len=args.max_seq_len,
                 user_states_path=states_path if os.path.isfile(states_path) else None,
                 seed=seed,
+                reset_mv=getattr(args, "reset_mv", False),
             )
             record["result"] = {
                 k: (float(v) if v is not None else None) for k, v in (result or {}).items()
@@ -602,6 +603,8 @@ def _orchestrate(args):
                 cmd += ["--skip_t2t"]
             if args.force_redump:
                 cmd += ["--force_redump"]
+            if getattr(args, "reset_mv", False):
+                cmd += ["--reset_mv"]
             if getattr(args, "data_tag", None) and str(args.data_tag).strip():
                 cmd += ["--data_tag", str(args.data_tag).strip()]
             log_fh = open(log_path, "w", buffering=1)
@@ -687,6 +690,8 @@ def main():
         ),
     )
 
+    parser.add_argument("--reset_mv", action="store_true",
+                        help="T2T 开始时将 Adam 的 V_r/V_k 清零（保留 S），消除 pretrain 动量偏差")
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
