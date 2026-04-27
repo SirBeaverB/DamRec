@@ -1,0 +1,40 @@
+{
+  "dataset": "ml-10m",
+  "data_tag": "dense_u20k_20_80",
+  "model": "Fro",
+  "model_name": "FroRec",
+  "seed": 2020,
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_20_80_L64_s2020",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_20_80_L64_s2020/FroRec-Apr-27-2026_12-38-04.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_20_80_L64_s2020/user_states_FroRec.pt",
+  "pretrain_valid": {},
+  "pretrain_test": {},
+  "result": {
+    "recall@10": 0.01,
+    "recall@20": 0.0191,
+    "recall@50": 0.0498,
+    "mrr@10": 0.0036,
+    "mrr@20": 0.0042,
+    "mrr@50": 0.0051,
+    "ndcg@10": 0.0051,
+    "ndcg@20": 0.0073,
+    "ndcg@50": 0.0133,
+    "hit@10": 0.01,
+    "hit@20": 0.0191,
+    "hit@50": 0.0498,
+    "precision@10": 0.001,
+    "precision@20": 0.001,
+    "precision@50": 0.001
+  },
+  "t_sec": 8.684236367000267,
+  "mem_gb": 2.9197940826416016,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": true
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "dataset": "ml-10m",
+  "data_tag": "dense_u20k_20_80",
+  "model": "GRU4Rec",
+  "model_name": "GRU4Rec",
+  "seed": 2020,
+  "ckp_dir": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_20_80_L64_s2020",
+  "ckp_path": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_20_80_L64_s2020/GRU4Rec-Apr-27-2026_13-17-05.pth",
+  "states_path": "/root/DamRec/saved/per_model_pretrain_ml-10m_dense_u20k_20_80_L64_s2020/user_states_GRU4Rec.pt",
+  "pretrain_valid": {},
+  "pretrain_test": {},
+  "result": {
+    "recall@10": 0.0087,
+    "recall@20": 0.0181,
+    "recall@50": 0.044,
+    "mrr@10": 0.0027,
+    "mrr@20": 0.0034,
+    "mrr@50": 0.0042,
+    "ndcg@10": 0.0041,
+    "ndcg@20": 0.0065,
+    "ndcg@50": 0.0117,
+    "hit@10": 0.0087,
+    "hit@20": 0.0181,
+    "hit@50": 0.044,
+    "precision@10": 0.0009,
+    "precision@20": 0.0009,
+    "precision@50": 0.0009
+  },
+  "t_sec": 1.229953472968191,
+  "mem_gb": 3.8012709617614746,
+  "pretrain_sec": null,
+  "dump_sec": null,
+  "pretrain_epochs": 150,
+  "t2t_lr": 0.0001,
+  "stages_run": {
+    "pretrain": false,
+    "dump": false,
+    "t2t": true
+  }
+}
